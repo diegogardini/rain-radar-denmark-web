@@ -33,14 +33,21 @@ function drawPointGraph(ctx, w, h, opts) {
   ctx.textBaseline = "middle"
   ctx.textAlign = "left"
 
+  // a scale label too close to the one below it (a small graph, on a phone) or
+  // to the unit above is left out; its line stays
+  const gap = parseFloat(opts.font) + 1
+  let lastLabelY = Infinity
   for (const lv of LEVELS) {
     const y = G.yFor(lv.value, plotTop, plotBottom)
     ctx.strokeStyle = a(fg, lv.value === 0 ? 0.35 : 0.12)
     ctx.lineWidth = 1
     ctx.setLineDash(lv.value === 0 ? [] : [3, 5])
     ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotRight, y); ctx.stroke()
-    ctx.fillStyle = a(fg, 0.55)
-    ctx.fillText(lv.label, plotRight + 6, y)
+    if (lv.label && lastLabelY - y >= gap && y - (plotTop - 8) >= gap) {
+      ctx.fillStyle = a(fg, 0.55)
+      ctx.fillText(lv.label, plotRight + 6, y)
+      lastLabelY = y
+    }
   }
   ctx.setLineDash([])
   ctx.fillStyle = a(fg, 0.55)

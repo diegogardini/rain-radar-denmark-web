@@ -290,7 +290,16 @@ const graphCanvas = $("graph")
 const graphCtx = graphCanvas.getContext("2d")
 let graphSize = { w: 0, h: 0, dpr: 1 }
 
+// The box over Sweden, as the widget's (Panel.qml: 58.42 N 11.9 E to 56.35 N 16.42 E).
+function placeGraphBox() {
+  if (!size.w) return
+  const tl = project(58.42, 11.9), br = project(56.35, 16.42), box = $("graph-box").style
+  box.left = tl.x + "px"; box.top = tl.y + "px"
+  box.width = (br.x - tl.x) + "px"; box.height = (br.y - tl.y) + "px"
+}
+
 function sizeGraph() {
+  placeGraphBox()
   const w = graphCanvas.clientWidth, h = graphCanvas.clientHeight
   if (!w || !h) return
   const dpr = Math.min(window.devicePixelRatio || 1, 3)
@@ -308,7 +317,7 @@ function cursorMs(f) {
 }
 
 function drawGraph(f) {
-  if (graphCanvas.hidden || !state.series) return
+  if ($("graph-box").hidden || !state.series) return
   sizeGraph()
   if (!graphSize.w) return
   const s = getComputedStyle(document.documentElement)
@@ -316,26 +325,10 @@ function drawGraph(f) {
   drawPointGraph(graphCtx, graphSize.w, graphSize.h, {
     series: state.series, chance: state.chanceSteps, cursorMs: cursorMs(f), GraphModel: L.GraphModel,
     fg: theme.fg, accent: s.getPropertyValue("--rain").trim(), chanceColor: s.getPropertyValue("--chance").trim(),
-    font: "11px " + getComputedStyle(document.body).fontFamily, rgba, clock,
+    font: (graphSize.w < 260 ? "9px " : "11px ") + getComputedStyle(document.body).fontFamily, rgba, clock,
   })
 }
 
-// a tap or drag on the graph moves the map to that time (and holds it there a moment)
-function seekToTime(ms) {
-  let best = -1, gap = Infinity
-  state.frames.forEach((fr, i) => { const g = Math.abs(Date.parse(fr.time) - ms); if (g < gap) { gap = g; best = i } })
-  if (best < 0) return
-  state.index = best
-  state.fraction = 0
-  state.holdUntil = performance.now() + 4000
-  draw()
-}
-function graphPointer(e) {
-  if (!state.series) return
-  const r = graphCanvas.getBoundingClientRect(), lay = graphLayout(graphSize.w, graphSize.h, state.series)
-  const x = e.clientX - r.left
-  if (x >= lay.plotLeft && x <= lay.plotRight) seekToTime(lay.msFor(x))
-}
 
 function clock(ms) {
   const d = new Date(ms)
@@ -418,7 +411,7 @@ function updateForecast() {
   $("place-name").textContent = p ? p.name : "Pick a place"
   $("change-place").hidden = !p
   const ready = p && state.nowcast.length
-  $("summary").hidden = $("chances").hidden = $("graph").hidden = !ready
+  $("summary").hidden = $("chances").hidden = $("graph-box").hidden = !ready
   $("stale").hidden = true
   state.series = null
   state.chanceSteps = []
@@ -588,8 +581,6 @@ async function main() {
   const track = $("track")
   track.addEventListener("pointerdown", (e) => { track.setPointerCapture(e.pointerId); seekTo(e.clientX) })
   track.addEventListener("pointermove", (e) => { if (e.buttons) seekTo(e.clientX) })
-  graphCanvas.addEventListener("pointerdown", (e) => { graphCanvas.setPointerCapture(e.pointerId); graphPointer(e) })
-  graphCanvas.addEventListener("pointermove", (e) => { if (e.buttons) graphPointer(e) })
 
   updateForecast()
   draw()
