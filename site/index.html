@@ -69,6 +69,7 @@ header span { color: var(--muted); font-size: 13px; }
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
 .place-row { display: flex; align-items: center; gap: 10px; }
+.place { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .place-row .name { flex: 1; font-weight: 650; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .link { background: none; border: 0; padding: 4px 0; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
 .link:hover { color: var(--fg); text-decoration: underline; }
@@ -81,6 +82,8 @@ header span { color: var(--muted); font-size: 13px; }
 .warn { color: var(--urgent); font-size: 13px; }
 #graph { display: block; width: 100%; height: 190px; cursor: pointer; touch-action: none; }
 .hint { color: var(--muted); font-size: 14px; }
+.note { color: var(--chance); font-size: 13px; }
+.chip[aria-busy="true"] { opacity: .6; cursor: progress; }
 
 .places { display: flex; flex-direction: column; gap: 10px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -126,20 +129,21 @@ footer a:hover { color: var(--fg); }
 
   <section class="card" id="card">
     <div class="place-row">
-      <span aria-hidden="true">📍</span>
-      <span class="name" id="place-name">Pick a place</span>
+      <button class="place" id="place-button" title="Change place"><span aria-hidden="true">📍</span>
+      <span class="name" id="place-name">Pick a place</span></button>
       <button class="link" id="change-place" hidden>Change place</button>
+    </div>
+    <div class="places" id="places">
+      <div class="hint" id="places-hint">Tap the map in Denmark, or pick a place, to see the rain falling there and what to expect over the next 90 minutes.</div>
+      <div class="chips" id="chips"></div>
+      <div class="note" id="locate-note" role="status" hidden></div>
+      <input class="search" id="search" type="search" placeholder="Search a Danish town or place" autocomplete="off" enterkeyhint="go">
+      <div class="results" id="results"></div>
     </div>
     <div class="summary" id="summary" hidden></div>
     <canvas id="graph" hidden aria-label="Rain at this place: the last hour and the next 90 minutes"></canvas>
     <div class="chances" id="chances" hidden></div>
     <div class="warn" id="stale" hidden></div>
-    <div class="places" id="places">
-      <div class="hint" id="places-hint">Tap the map in Denmark, or pick a place, to see the rain falling there and what to expect over the next 90 minutes.</div>
-      <div class="chips" id="chips"></div>
-      <input class="search" id="search" type="search" placeholder="Search a Danish town or place" autocomplete="off" enterkeyhint="go">
-      <div class="results" id="results"></div>
-    </div>
   </section>
 
   <footer>

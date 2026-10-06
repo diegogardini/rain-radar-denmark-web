@@ -458,7 +458,13 @@ function updateForecast() {
 function showPlaces(open) {
   $("places").hidden = !open
   $("places-hint").hidden = !!state.place
-  if (open) { $("search").value = ""; $("results").replaceChildren() }
+  $("change-place").textContent = open && state.place ? "Done" : "Change place"
+  if (open) {
+    $("search").value = ""
+    $("results").replaceChildren()
+    $("locate-note").hidden = true
+    if (state.place) $("card").scrollIntoView({ behavior: "smooth", block: "start" })
+  }
 }
 
 function pickOnMap(evt) {
@@ -470,27 +476,46 @@ function pickOnMap(evt) {
     latitude: Math.round(ll.latitude * 1e4) / 1e4, longitude: Math.round(ll.longitude * 1e4) / 1e4 })
 }
 
-function useMyLocation() {
-  if (!navigator.geolocation) return
-  $("places-hint").hidden = false
-  $("places-hint").textContent = "Finding your location…"
+// "My location": the device's own position, after the browser asks. The chip
+// says it is working, and a failure says why, next to the chips.
+function useMyLocation(chip) {
+  const note = $("locate-note")
+  const done = (message) => {
+    chip.removeAttribute("aria-busy")
+    chip.textContent = "📍 My location"
+    note.hidden = !message
+    note.textContent = message || ""
+  }
+  if (!navigator.geolocation || !window.isSecureContext) {
+    done("This browser cannot share your location here. Pick a place instead.")
+    return
+  }
+  chip.setAttribute("aria-busy", "true")
+  chip.textContent = "📍 Locating…"
+  note.hidden = true
   navigator.geolocation.getCurrentPosition((pos) => {
     const lat = pos.coords.latitude, lon = pos.coords.longitude
     if (!L.LocationModel.inDenmark(L.MapData.denmarkRings, lat, lon, 3)) {
-      $("places-hint").textContent = "Your location is outside Denmark. Pick a place instead."
+      done("You seem to be outside Denmark. Pick a place instead.")
       return
     }
+    done("")
     setPlace({ name: L.LocationModel.nameForPoint(lat, lon, L.Towns.towns), latitude: Math.round(lat * 1e4) / 1e4,
       longitude: Math.round(lon * 1e4) / 1e4 })
-  }, () => { $("places-hint").textContent = "Could not get your location. Pick a place instead." },
-  { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 })
+  }, (err) => {
+    done(err && err.code === 1
+      ? "Location access is blocked for this site. Allow it in your browser's site settings (the icon left of the address), or pick a place."
+      : err && err.code === 3
+        ? "Finding your location took too long. Try again, or pick a place."
+        : "Your device could not tell where it is (is location turned on?). Pick a place instead.")
+  }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 })
 }
 
 function setUpPlaces() {
   const chips = $("chips")
   const mine = document.createElement("button")
   mine.className = "chip"; mine.textContent = "📍 My location"
-  mine.onclick = useMyLocation
+  mine.onclick = () => useMyLocation(mine)
   if (navigator.geolocation) chips.append(mine)
   for (const c of L.LocationModel.cities.slice(0, 4)) {
     const b = document.createElement("button")
@@ -515,6 +540,7 @@ function setUpPlaces() {
     if (e.key === "Escape") { search.value = ""; render() }
   })
   $("change-place").onclick = () => showPlaces($("places").hidden)
+  $("place-button").onclick = () => showPlaces($("places").hidden)
 }
 
 const PAUSE = '<svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="2" width="3.5" height="12" rx="1" fill="currentColor"/><rect x="9.5" y="2" width="3.5" height="12" rx="1" fill="currentColor"/></svg>'
