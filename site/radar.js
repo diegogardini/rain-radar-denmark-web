@@ -21,7 +21,8 @@ var LATTICE = 16
 var NO_CELL = 0xFFFF
 // Limits, far above DMI's files (as helpers/dmi-radar-convert.py)
 var MAX_FILE_BYTES = 20000000, MAX_GRID_SIDE = 8192, MAX_GRID_BYTES = 32000000
-var MAX_MESSAGES = 1024, MAX_TREE_DEPTH = 16, MAX_ENTRIES = 65536, MAX_ATTR_VALUES = 4096
+var MAX_MESSAGES = 1024, MAX_TREE_DEPTH = 16, MAX_ATTR_VALUES = 4096
+var MAX_GROUP_ENTRIES = 1024 // B-tree entries and symbols read for one group (DMI's have under 10)
 
 function Unsupported(message) { this.message = "unsupported radar file: " + message }
 Unsupported.prototype = Object.create(Error.prototype)
@@ -91,18 +92,24 @@ H5.prototype.children = function(addr) {
   if (!table) return {}
   var btree = this.u64(table.o), heap = this.u64(table.o + 8)
   if (this.tag(heap) !== "HEAP") throw new Unsupported("group without a local heap")
-  var heapData = this.u64(heap + 24), out = {}, self = this, seen = {}, nodes = 0
+  var heapData = this.u64(heap + 24), out = {}, self = this, seen = {}, budget = MAX_GROUP_ENTRIES
+  function spend(n) { budget -= n; if (budget < 0) throw new Unsupported("a group lists more entries than a radar file has") }
   ;(function node(a, depth) {
-    if (depth > MAX_TREE_DEPTH || seen[a] || ++nodes > MAX_ENTRIES) throw new Unsupported("a group B-tree loops or is too deep")
+    if (depth > MAX_TREE_DEPTH || seen[a]) throw new Unsupported("a group B-tree loops or is too deep")
     seen[a] = true
     if (self.tag(a) !== "TREE") throw new Unsupported("bad group B-tree")
     var level = self.u8(a + 5), used = self.u16(a + 6), o = a + 24 + 8
+    spend(used)
     for (var k = 0; k < used; k++) {
       var child = self.u64(o)
       o += 16
       if (level > 0) { node(child, depth + 1); continue }
+      if (seen[child]) throw new Unsupported("a symbol node is listed twice")
+      seen[child] = true
       if (self.tag(child) !== "SNOD") throw new Unsupported("bad symbol node")
-      for (var s = 0; s < self.u16(child + 6); s++) {
+      var symbols = self.u16(child + 6)
+      spend(symbols)
+      for (var s = 0; s < symbols; s++) {
         var e = child + 8 + 40 * s
         out[self.cstr(heapData + self.u64(e))] = self.u64(e + 8)
       }
@@ -184,18 +191,23 @@ H5.prototype.datasetU8 = async function(addr) {
   var crow = this.u32(layout + 11), ccol = this.u32(layout + 15)
   var rows = shape[0], cols = shape[1]
   if (!(crow > 0 && crow <= rows && ccol > 0 && ccol <= cols) || this.u32(layout + 19) !== 1) throw new Unsupported("bad chunk size")
-  var out = new Uint8Array(rows * cols), jobs = [], self = this, seen = {}, nodes = 0
+  var out = new Uint8Array(rows * cols), jobs = [], self = this, seen = {}, placed = {}
+  var budget = 4 * Math.ceil(rows / crow) * Math.ceil(cols / ccol) + 64 // entries read, leaves and inner nodes
   ;(function node(a, depth) {
-    if (depth > MAX_TREE_DEPTH || seen[a] || ++nodes > MAX_ENTRIES) throw new Unsupported("a chunk B-tree loops or is too deep")
+    if (depth > MAX_TREE_DEPTH || seen[a]) throw new Unsupported("a chunk B-tree loops or is too deep")
     seen[a] = true
     if (self.tag(a) !== "TREE" || self.u8(a + 4) !== 1) throw new Unsupported("bad chunk B-tree")
     var level = self.u8(a + 5), used = self.u16(a + 6), key = 8 + 8 * dims, o = a + 24
+    budget -= used
+    if (budget < 0) throw new Unsupported("the chunk tree lists more chunks than the grid holds")
     for (var k = 0; k < used; k++) {
       var size = self.u32(o), mask = self.u32(o + 4), r0 = self.u64(o + 8), c0 = self.u64(o + 16)
       var child = self.u64(o + key)
       if (level > 0) node(child, depth + 1)
       else {
         if (r0 >= rows || c0 >= cols || r0 % crow || c0 % ccol) throw new Unsupported("a chunk lies outside the grid")
+        if (placed[r0 + "," + c0]) throw new Unsupported("a chunk is listed twice")
+        placed[r0 + "," + c0] = true
         self.check(child, size)
         jobs.push({ raw: self.d.subarray(child, child + size), plain: (mask & 1) || !filters.length, r0: r0, c0: c0 })
       }

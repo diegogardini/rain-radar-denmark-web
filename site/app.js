@@ -82,7 +82,9 @@ function pairMotion(a, b) {
 function buildFrames() {
   const observed = state.items.filter((it) => state.scans[it.id]).map((it, i, all) => ({
     kind: "observed", time: it.datetime, scan: state.scans[it.id],
-    motion: i + 1 < all.length ? pairMotion(it.id, all[i + 1].id) : state.motion,
+    // as the widget: a pair without a measurable motion (little rain on the map)
+    // glides along the nowcast's 30-minute motion instead of standing still
+    motion: (i + 1 < all.length ? pairMotion(it.id, all[i + 1].id) : null) || state.motion,
   }))
   const forecast = state.nowcast.map((s) => ({ kind: "forecast", time: s.time, grid: s.grid, motion: state.motion }))
   state.frames = observed.concat(forecast)
