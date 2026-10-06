@@ -3,5 +3,5 @@
 window.RAIN_CONFIG = {
   downloadBase: /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
     ? "dmi/"
-    : "https://rain-radar-denmark.WORKER-SUBDOMAIN.workers.dev/download/",
+    : "https://rain-radar-denmark.rainradardenmark.workers.dev/download/",
 }
