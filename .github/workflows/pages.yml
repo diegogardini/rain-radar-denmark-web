@@ -1,0 +1,59 @@
+# Publishes the site to GitHub Pages. The widget's JavaScript models (nowcast,
+# chances, places, colours, map) come from the widget repository at its latest
+# release tag, so only released widget code reaches the site; the daily run
+# picks up a new widget release without a push here.
+#
+# One-time setup: repository Settings > Pages > Source: "GitHub Actions".
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Widget at its latest release
+        run: |
+          git clone --quiet https://github.com/diegogardini/omarchy-rain-radar-denmark-widget.git widget
+          tag=$(git -C widget tag --list 'v*' --sort=-v:refname | head -1)
+          git -C widget checkout --quiet "$tag"
+          echo "widget $tag"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test
+        env:
+          WIDGET_DIR: widget
+        run: |
+          node --test tests/*.test.cjs
+          (cd widget && node --test tests/*.test.cjs)
+      - name: Build
+        run: bash tools/build.sh _site widget
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
