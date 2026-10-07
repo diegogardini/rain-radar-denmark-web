@@ -136,7 +136,8 @@ function drawPointGraph(ctx, w, h, opts) {
     ctx.beginPath(); ctx.arc(cx, xy[near].y, 3.5, 0, 2 * Math.PI); ctx.fill()
     const p = pts[near]
     const parts = [
-      { text: opts.clock(cursorMs) + (compact ? " " : "  "), colour: a(fg, 0.9) },
+      // the time to the nearest 10 minutes, as the map's badge (the cursor still glides)
+      { text: opts.clock(opts.shownMs ? opts.shownMs(cursorMs) : cursorMs) + (compact ? " " : "  "), colour: a(fg, 0.9) },
       { text: p.mm.toFixed(p.mm < 10 ? 1 : 0) + " mm/h", colour: accent },
     ]
     if (p.kind === "nowcast" && p.ms >= series.nowMs && chance.length) {

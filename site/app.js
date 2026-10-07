@@ -6,7 +6,7 @@
 
 const OBSERVED_SCANS = 7    // one hour of full-range scans, as the widget
 const MOTION_SCANS = 4      // the nowcast's motion: the last 30 minutes
-const FRAME_MS = 350        // one 10-minute step on screen, as the widget
+const FRAME_MS = 387        // one 10-minute step on screen, as the widget (twice 5% slower than the first 350)
 const REFRESH_MS = 5 * 60000
 const STORE_KEY = "rain-radar-denmark.place"
 
@@ -325,10 +325,14 @@ function drawGraph(f) {
   drawPointGraph(graphCtx, graphSize.w, graphSize.h, {
     series: state.series, chance: state.chanceSteps, cursorMs: cursorMs(f), GraphModel: L.GraphModel,
     fg: theme.fg, accent: s.getPropertyValue("--rain").trim(), chanceColor: s.getPropertyValue("--chance").trim(),
-    font: (graphSize.w < 260 ? "9px " : "11px ") + getComputedStyle(document.body).fontFamily, rgba, clock,
+    font: (graphSize.w < 260 ? "9px " : "11px ") + getComputedStyle(document.body).fontFamily, rgba, clock, shownMs,
   })
 }
 
+
+// The time shown for a moment of the animation: to the nearest 10 minutes,
+// as the widget (Timeline.shownMs); the rain still glides on exactly.
+const shownMs = (ms) => Math.round(ms / 600000) * 600000
 
 function clock(ms) {
   const d = new Date(ms)
@@ -339,12 +343,7 @@ function drawChrome(f) {
   const badge = $("badge")
   badge.hidden = !f
   if (f) {
-    if (f.kind === "observed") badge.textContent = "RADAR"
-    else {
-      const next = state.frames[state.index + 1]
-      const ms = Date.parse(f.time) + (next ? glide(f) * (Date.parse(next.time) - Date.parse(f.time)) : 0)
-      badge.textContent = "NOWCAST  " + clock(ms)
-    }
+    badge.textContent = (f.kind === "observed" ? "PAST" : "PROJECTED") + "  " + clock(shownMs(cursorMs(f)))
   }
   const n = state.frames.length
   const pos = n > 1 ? (state.index + glide(f)) / (n - 1) : 0
