@@ -8,11 +8,12 @@
 
 const OBSERVED_SCANS = 7    // one hour of full-range scans, as the widget
 const MOTION_SCANS = 4      // the nowcast's motion: the last 30 minutes
-const FRAME_MS = 387        // one 10-minute step on screen at 1×, as the widget
+const FRAME_MS = 774        // one 10-minute step on screen at 1×: half the widget's pace (387 ms, here 2×)
 const SPEEDS = [0.5, 1, 2]  // the speed button cycles through these
 const REFRESH_MS = 5 * 60000
 const STORE_KEY = "rain-radar-denmark.place"
-const SPEED_KEY = "rain-radar-denmark.speed"
+// ".speed" held a choice on the old scale (1× = 387 ms); a new key starts everyone at the new 1×
+const SPEED_KEY = "rain-radar-denmark.playback-speed"
 // What the map shows: Denmark from the North Sea coast to Zealand, Skagen to
 // the German border (the data area, MapModel.bounds, is larger: rain still
 // comes in from beyond it). Bornholm has its own inset, 104 x 104 CSS pixels,
