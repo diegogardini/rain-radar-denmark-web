@@ -719,8 +719,18 @@ async function main() {
   updateForecast()
   draw()
   requestAnimationFrame(tick)
+  // New scans every REFRESH_MS, but not while the tab is hidden (a page left
+  // open in the background asks for nothing); back in view, a check that
+  // fell due meanwhile runs at once.
+  let lastRefresh = Date.now()
   await refresh()
-  setInterval(refresh, REFRESH_MS)
+  const refreshIfDue = () => {
+    if (document.hidden || Date.now() - lastRefresh < REFRESH_MS) return
+    lastRefresh = Date.now()
+    refresh()
+  }
+  setInterval(refreshIfDue, 30000)
+  document.addEventListener("visibilitychange", refreshIfDue)
   setInterval(() => { updateForecast(); draw() }, 60000) // the clock moves on
 }
 
