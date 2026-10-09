@@ -5,7 +5,10 @@
 // frame on the map, and app.js lets the viewer drag along it.
 "use strict"
 
-const GRAPH_TOP = 22, GRAPH_BASE = 96, LABEL_Y = 113
+// The top row (the labels) and the time row take 22 px each; the bars fill
+// what is between, so a taller graph (a computer) has taller bars.
+const GRAPH_TOP = 22, GRAPH_BOTTOM = 22
+const SCALE_LEVELS = [1, 2.5, 10, 50] // mm/h, as the widget's graph
 
 // The frame position (0 = the first bar's centre) under x, for a graph `w` wide with `n` bars.
 function graphPosAt(x, w, n) {
@@ -19,6 +22,7 @@ function drawBarGraph(ctx, w, h, opts) {
   const bars = opts.bars, n = bars.length, c = opts.colours
   ctx.clearRect(0, 0, w, h)
   if (!n) return
+  const GRAPH_BASE = h - GRAPH_BOTTOM, LABEL_Y = h - 5
   const slot = w / n, barW = Math.min(14, slot * 0.64), plotH = GRAPH_BASE - GRAPH_TOP
   const observed = bars.filter((b) => b.kind === "observed").length
   const centre = (i) => (i + 0.5) * slot
@@ -31,15 +35,25 @@ function drawBarGraph(ctx, w, h, opts) {
     ctx.fill()
   }
 
-
-  // 1 mm/h, and the axis
-  const oneY = GRAPH_BASE - opts.heightFraction(1) * plotH
-  ctx.strokeStyle = c.grid; ctx.lineWidth = 1; ctx.setLineDash([2, 4])
-  line(ctx, 0, oneY, w, oneY)
-  ctx.setLineDash([])
-  ctx.fillStyle = c.muted; ctx.textAlign = "right"
+  // the scale: the widget's levels, each a faint line with its value (the
+  // top one with the unit); a level whose label would crowd the one below
+  // it, or the top row, is left out, so a short graph (a phone) shows fewer
+  const gap = 14
+  const levels = []
+  for (const mm of SCALE_LEVELS) {
+    const y = GRAPH_BASE - opts.heightFraction(mm) * plotH
+    const below = levels.length ? levels[levels.length - 1].y : GRAPH_BASE + gap
+    if (below - y >= gap && y - 10 >= GRAPH_TOP) levels.push({ mm, y })
+  }
   ctx.font = "10px " + opts.fontFamily
-  ctx.fillText("1 mm/h", w, oneY - 5)
+  ctx.textAlign = "right"
+  levels.forEach((lv, k) => {
+    ctx.strokeStyle = c.grid; ctx.lineWidth = 1; ctx.setLineDash([2, 4])
+    line(ctx, 0, lv.y, w, lv.y)
+    ctx.setLineDash([])
+    ctx.fillStyle = c.muted
+    ctx.fillText(lv.mm + (k === levels.length - 1 ? " mm/h" : ""), w, lv.y - 4)
+  })
   ctx.strokeStyle = c.axis
   line(ctx, 0, GRAPH_BASE + 0.5, w, GRAPH_BASE + 0.5)
 
