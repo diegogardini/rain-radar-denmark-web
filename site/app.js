@@ -15,9 +15,10 @@ const STORE_KEY = "rain-radar-denmark.place"
 const SPEED_KEY = "rain-radar-denmark.speed"
 // What the map shows: Denmark from the North Sea coast to Zealand, Skagen to
 // the German border (the data area, MapModel.bounds, is larger: rain still
-// comes in from beyond it). Bornholm has its own inset, 64 x 68 CSS pixels.
+// comes in from beyond it). Bornholm has its own inset, 104 x 104 CSS pixels,
+// with the sea around the island (about 1.2 degrees of longitude by 0.65 of latitude).
 const VIEW = { west: 7.5, east: 13.6, south: 54.3, north: 58.155 }
-const BORNHOLM = { longitude: 14.92, latitude: 55.14, scale: 187.5 } // px per degree of latitude
+const BORNHOLM = { longitude: 14.92, latitude: 55.14, scale: 160 } // px per degree of latitude
 
 const $ = (id) => document.getElementById(id)
 // ?at=2026-07-30T18:43Z replays a past moment (DMI keeps 180 days of scans)
@@ -164,8 +165,22 @@ function makeView(canvasId, pinId, project) {
   return { canvas, ctx: canvas.getContext("2d"), pin: $(pinId), project, proj: null, dpr: 1, land: null, coast: null, dashed: null, layers: new Map(), margin: null }
 }
 function clearLayers(v) { v.layers.clear(); v.margin = null }
+// The main map: all of VIEW in the box (a phone's box has VIEW's own shape;
+// a computer's wider one shows more around it), but never past the radar's
+// area (MapModel.bounds), where there is no rain to show.
+function fitView(w, h) {
+  const k = L.MapModel.longitudeScale, B = L.MapModel.bounds
+  const clamp = (v, lo, hi) => lo > hi ? (lo + hi) / 2 : Math.max(lo, Math.min(hi, v))
+  const scale = Math.max(
+    Math.min(h / (VIEW.north - VIEW.south), w / ((VIEW.east - VIEW.west) * k)),
+    h / (B.north - B.south), w / ((B.east - B.west) * k))
+  const halfLon = w / 2 / (k * scale), halfLat = h / 2 / scale
+  const lon0 = clamp((VIEW.west + VIEW.east) / 2, B.west + halfLon, B.east - halfLon)
+  const lat0 = clamp((VIEW.south + VIEW.north) / 2, B.south + halfLat, B.north - halfLat)
+  return projection(lon0, lat0, scale, w, h)
+}
 const views = [
-  makeView("map", "pin", (w, h) => projection((VIEW.west + VIEW.east) / 2, (VIEW.south + VIEW.north) / 2, h / (VIEW.north - VIEW.south), w, h)),
+  makeView("map", "pin", fitView),
   makeView("inset", "inset-pin", (w, h) => projection(BORNHOLM.longitude, BORNHOLM.latitude, BORNHOLM.scale, w, h)),
 ]
 
@@ -649,7 +664,12 @@ function setUpSearch() {
 // ---- Start ----
 
 function resize() {
-  for (const v of views) setUpView(v)
+  // Bornholm's inset only when the map itself leaves Bornholm out (a phone)
+  views[0].proj = null
+  setUpView(views[0])
+  const p = views[0].proj
+  $("inset-wrap").hidden = !!p && p.x(15.16) <= p.w && p.x(14.68) >= 0 && p.y(55.3) >= 0 && p.y(54.98) <= p.h
+  setUpView(views[1])
   graphSize = { w: 0, h: 0, dpr: 1 }
   draw()
 }
