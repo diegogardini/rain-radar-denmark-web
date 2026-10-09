@@ -8,9 +8,11 @@
 
 const OBSERVED_SCANS = 7    // one hour of full-range scans, as the widget
 const MOTION_SCANS = 4      // the nowcast's motion: the last 30 minutes
-const FRAME_MS = 387        // one 10-minute step on screen, as the widget
+const FRAME_MS = 387        // one 10-minute step on screen at 1×, as the widget
+const SPEEDS = [0.5, 1, 2]  // the speed button cycles through these
 const REFRESH_MS = 5 * 60000
 const STORE_KEY = "rain-radar-denmark.place"
+const SPEED_KEY = "rain-radar-denmark.speed"
 // What the map shows: Denmark from the North Sea coast to Zealand, Skagen to
 // the German border (the data area, MapModel.bounds, is larger: rain still
 // comes in from beyond it). Bornholm has its own inset, 64 x 68 CSS pixels.
@@ -24,7 +26,7 @@ const now = () => isFinite(AT) ? AT : Date.now()
 const L = {}                // the widget's models, by file name
 const state = {
   items: [], scans: {}, frames: [], nowcast: [], motion: null, hasEdgeGuess: false,
-  pos: 0, playing: true, dragging: false, place: null, series: null, error: "",
+  pos: 0, playing: true, speed: 1, dragging: false, place: null, series: null, error: "",
 }
 
 // ---- Loading the widget's models: each file is plain JavaScript that sets
@@ -412,7 +414,7 @@ function tick(t) {
   last = t
   const n = state.frames.length
   if (n > 1 && state.playing && !state.dragging) {
-    state.pos += dt / FRAME_MS
+    state.pos += dt * state.speed / FRAME_MS
     if (state.pos >= n) state.pos -= n // the last frame holds one step, then the loop starts over
     draw()
   }
@@ -426,6 +428,16 @@ function setPlaying(on) {
   state.playing = on
   $("play").innerHTML = on ? PAUSE : PLAY
   $("play").setAttribute("aria-label", on ? "Pause" : "Play")
+}
+
+const speedLabel = (s) => (s === 0.5 ? "½" : String(s)) + "×"
+function setSpeed(s, save = true) {
+  state.speed = s
+  $("speed").textContent = speedLabel(s)
+  $("speed").setAttribute("aria-label", "Playback speed " + speedLabel(s) + ". Change it")
+  if (save) {
+    try { localStorage.setItem(SPEED_KEY, String(s)) } catch (e) { /* private mode */ }
+  }
 }
 
 function setUpTimeline() {
@@ -466,6 +478,10 @@ function setUpTimeline() {
     draw()
   })
   $("play").onclick = () => setPlaying(!state.playing)
+  $("speed").onclick = () => setSpeed(SPEEDS[(SPEEDS.indexOf(state.speed) + 1) % SPEEDS.length])
+  let saved = 1
+  try { saved = Number(localStorage.getItem(SPEED_KEY)) } catch (e) { /* none */ }
+  setSpeed(SPEEDS.includes(saved) ? saved : 1, false)
 }
 
 // ---- The place and the forecast (as Panel.qml) ----

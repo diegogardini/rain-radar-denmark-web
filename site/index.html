@@ -65,6 +65,7 @@ button { font: inherit; color: inherit; }
 
 .controls { position: absolute; left: 16px; bottom: 36px; display: flex; align-items: center; gap: 8px; }
 .play { width: 44px; height: 44px; border: 0; border-radius: 50%; background: var(--play); color: var(--on-play); display: grid; place-items: center; padding: 0; cursor: pointer; }
+.speed { min-width: 44px; height: 44px; padding: 0 10px; border: 0; border-radius: 22px; background: var(--chip); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; }
 .time-chip { height: 32px; padding: 0 12px; border-radius: 16px; background: var(--chip); display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .time-chip .kind { font-size: 11px; letter-spacing: 0.06em; color: var(--muted); }
 .time-chip .kind.projected { color: var(--accent); }
@@ -123,6 +124,7 @@ footer a:hover { color: var(--ink); }
 
     <div class="controls">
       <button class="play" id="play" aria-label="Pause"></button>
+      <button class="speed" id="speed" aria-label="Playback speed 1×. Change it">1×</button>
       <div class="time-chip" id="chip" hidden><span class="kind" id="chip-kind"></span><span id="chip-time"></span></div>
     </div>
   </div>
