@@ -430,12 +430,91 @@ function drawGraph(cur) {
   })
 }
 
+// ---- The rain falling at the place now, behind the sheet ----
+
+// As many drops as the rain at the place now calls for, on the widget's
+// graph scale (GraphModel.heightFraction: 1 mm/h a third of RAIN_FX_MAX,
+// 10 mm/h 83%), none when dry; heavier rain also falls longer and faster.
+// Faint, behind the text; still drops for "reduce motion".
+const RAIN_FX_MAX = 140
+const rainFx = { canvas: $("rain-fx"), drops: [], target: 0, strength: 0, w: 0, h: 0, dpr: 1, still: false }
+rainFx.ctx = rainFx.canvas.getContext("2d")
+
+function sizeRainFx() {
+  const sheet = $("sheet"), f = rainFx
+  const w = sheet.clientWidth, h = sheet.scrollHeight, dpr = Math.min(window.devicePixelRatio || 1, 2)
+  if (w === f.w && h === f.h && dpr === f.dpr) return
+  Object.assign(f, { w, h, dpr })
+  f.canvas.style.width = w + "px"; f.canvas.style.height = h + "px"
+  f.canvas.width = Math.round(w * dpr); f.canvas.height = Math.round(h * dpr)
+  if (f.still) drawRainFx()
+}
+
+function setRainAmount(mm) {
+  const f = rainFx
+  f.strength = typeof mm === "number" && mm >= 0.1 ? L.GraphModel.heightFraction(mm) : 0
+  f.target = Math.round(RAIN_FX_MAX * f.strength)
+  if (f.still) {
+    f.drops = []
+    while (f.drops.length < f.target) f.drops.push(newDrop(true))
+    drawRainFx()
+  }
+}
+
+function newDrop(anywhere) {
+  const s = rainFx.strength
+  return {
+    x: Math.random() * (rainFx.w + 40) - 20,
+    y: anywhere ? Math.random() * rainFx.h : -20 - Math.random() * 60,
+    len: (8 + Math.random() * 10) * (0.7 + 0.8 * s),
+    speed: (280 + Math.random() * 220) * (0.8 + 0.8 * s), // px per second
+  }
+}
+
+const RAIN_SLANT = 0.12 // a little sideways, as in a breeze
+function stepRainFx(dt) {
+  const f = rainFx
+  if (f.still || (!f.target && !f.drops.length)) return
+  // drops come in a few at a time, and stop coming when the rain eases
+  for (let k = 0; k < 3 && f.drops.length < f.target; k++) f.drops.push(newDrop(false))
+  // a drop that falls off the bottom starts again at the top, unless there
+  // are more drops than the rain now calls for
+  let excess = f.drops.length - f.target
+  const kept = []
+  for (const d of f.drops) {
+    d.y += d.speed * dt / 1000
+    d.x += d.speed * RAIN_SLANT * dt / 1000
+    if (d.y - d.len >= f.h) {
+      if (excess > 0) { excess--; continue }
+      Object.assign(d, newDrop(false))
+    }
+    kept.push(d)
+  }
+  f.drops = kept
+  drawRainFx()
+}
+
+function drawRainFx() {
+  const f = rainFx, c = f.ctx
+  c.setTransform(f.dpr, 0, 0, f.dpr, 0, 0)
+  c.clearRect(0, 0, f.w, f.h)
+  if (!f.drops.length) return
+  if (f.colourOf !== theme.accent) { f.colourOf = theme.accent; f.colour = rgba(theme.accent, 0.28) }
+  c.strokeStyle = f.colour
+  c.lineWidth = 1.2
+  c.lineCap = "round"
+  c.beginPath()
+  for (const d of f.drops) { c.moveTo(d.x, d.y); c.lineTo(d.x - d.len * RAIN_SLANT, d.y - d.len) }
+  c.stroke()
+}
+
 // ---- Playback, and the graph as the timeline ----
 
 let last = 0
 function tick(t) {
   const dt = last ? Math.min(t - last, 100) : 0
   last = t
+  stepRainFx(dt)
   const n = state.frames.length
   if (n > 1 && state.playing && !state.dragging) {
     state.pos += dt * state.speed / FRAME_MS
@@ -533,6 +612,8 @@ function updateForecast() {
   state.series = null
   $("stale").hidden = true
   $("chances").hidden = true
+  setRainAmount(0)
+  requestAnimationFrame(sizeRainFx) // once the text below has changed the sheet's height
   if (!p) {
     $("where").textContent = ""
     $("headline").textContent = "Pick a place"
@@ -552,6 +633,7 @@ function updateForecast() {
   const rainChance = chance ? CM.rainWithin(chance, PS.coveredMinutes(series)) : null
   const dryBy = chance ? CM.dryForGoodBy(chance, 1 - PS.NO_RAIN_CHANCE) : undefined
   state.series = series
+  setRainAmount(PS.currentMm(series))
 
   // "Light rain now · may ease off": the headline, then the rest as a sentence
   const [head, ...rest] = PS.summary(series, rainChance, dryBy).split(" · ")
@@ -712,6 +794,12 @@ async function main() {
   theme = colours()
   resize()
   window.addEventListener("resize", resize)
+  // the sheet grows and shrinks with its text: the rain behind it follows
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)")
+  rainFx.still = reduce.matches
+  reduce.addEventListener("change", () => { rainFx.still = reduce.matches; rainFx.drops = []; setRainAmount(state.series ? L.PointSeries.currentMm(state.series) : 0) })
+  new ResizeObserver(sizeRainFx).observe($("sheet"))
+  sizeRainFx()
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { theme = colours(); resize() })
   views[0].canvas.addEventListener("click", (e) => pickOn(views[0], e))
   views[1].canvas.addEventListener("click", (e) => pickOn(views[1], e))
