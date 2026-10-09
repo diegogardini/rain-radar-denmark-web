@@ -1,14 +1,21 @@
 // Rain Radar Denmark on the web: the Omarchy widget's own models (lib/*.js,
 // copied from the widget repository at build time), DMI's scans converted in
-// the browser (radar.js), and the map drawn as the widget draws it
-// (RadarMap.qml in the widget repository).
+// the browser (radar.js), and the rain drawn as the widget draws it
+// (RadarMap.qml in the widget repository), on a phone-sized map of Denmark
+// with Bornholm in an inset, and a bar graph of the place that is also the
+// map's timeline (graph.js).
 "use strict"
 
 const OBSERVED_SCANS = 7    // one hour of full-range scans, as the widget
 const MOTION_SCANS = 4      // the nowcast's motion: the last 30 minutes
-const FRAME_MS = 387        // one 10-minute step on screen, as the widget (twice 5% slower than the first 350)
+const FRAME_MS = 387        // one 10-minute step on screen, as the widget
 const REFRESH_MS = 5 * 60000
 const STORE_KEY = "rain-radar-denmark.place"
+// What the map shows: Denmark from the North Sea coast to Zealand, Skagen to
+// the German border (the data area, MapModel.bounds, is larger: rain still
+// comes in from beyond it). Bornholm has its own inset, 64 x 68 CSS pixels.
+const VIEW = { west: 7.5, east: 13.6, south: 54.3, north: 58.155 }
+const BORNHOLM = { longitude: 14.92, latitude: 55.14, scale: 187.5 } // px per degree of latitude
 
 const $ = (id) => document.getElementById(id)
 // ?at=2026-07-30T18:43Z replays a past moment (DMI keeps 180 days of scans)
@@ -16,8 +23,8 @@ const AT = Date.parse(new URLSearchParams(location.search).get("at") || "")
 const now = () => isFinite(AT) ? AT : Date.now()
 const L = {}                // the widget's models, by file name
 const state = {
-  items: [], scans: {}, frames: [], nowIndex: 0, nowcast: [], motion: null, hasEdgeGuess: false,
-  index: 0, fraction: 0, playing: true, holdUntil: 0, place: null, error: "",
+  items: [], scans: {}, frames: [], nowcast: [], motion: null, hasEdgeGuess: false,
+  pos: 0, playing: true, dragging: false, place: null, series: null, error: "",
 }
 
 // ---- Loading the widget's models: each file is plain JavaScript that sets
@@ -88,9 +95,8 @@ function buildFrames() {
   }))
   const forecast = state.nowcast.map((s) => ({ kind: "forecast", time: s.time, grid: s.grid, motion: state.motion }))
   state.frames = observed.concat(forecast)
-  state.nowIndex = observed.length
-  if (state.index >= state.frames.length) state.index = 0
-  layers.clear()
+  if (state.pos >= state.frames.length) state.pos = 0
+  for (const v of views) clearLayers(v)
 }
 
 async function refresh() {
@@ -110,26 +116,26 @@ async function refresh() {
   }
   $("map-status").textContent = state.error
   $("map-status").hidden = !state.error
-  $("legend-edge").classList.toggle("on", state.hasEdgeGuess)
+  $("legend-edge").hidden = !state.hasEdgeGuess
   updateForecast()
   draw()
 }
 
-// ---- The map (as RadarMap.qml) ----
+// ---- The maps: Denmark, and Bornholm's inset ----
 
-const canvas = $("map")
-const ctx = canvas.getContext("2d")
-let size = { w: 0, h: 0, dpr: 1 }
-const layers = new Map() // frame index -> offscreen canvas with that frame's rain
-
+let theme = null
 function colours() {
   const s = getComputedStyle(document.documentElement)
   const v = (n) => s.getPropertyValue(n).trim()
-  return { fg: v("--fg"), surface: v("--surface"), pin: v("--rain") }
+  return {
+    ink: v("--ink"), muted: v("--muted"), accent: v("--accent"), surface: v("--surface"),
+    land: v("--land"), neighbour: v("--neighbour"), coast: v("--coast"), neighbourCoast: v("--neighbour-coast"),
+    past: v("--past"), dry: v("--dry"), band: v("--band"), grid: v("--grid"), axis: v("--axis"),
+  }
 }
-function rgba(hex, a) {
+function rgba(colour, a) {
   const c = document.createElement("canvas").getContext("2d")
-  c.fillStyle = hex
+  c.fillStyle = colour
   const h = c.fillStyle
   if (h[0] === "#") {
     const n = parseInt(h.slice(1), 16)
@@ -137,53 +143,87 @@ function rgba(hex, a) {
   }
   return h.replace(/rgba?\(([^)]+)\)/, (m, inner) => `rgba(${inner.split(",").slice(0, 3).join(",")},${a})`)
 }
-let theme = null
 
-function resize() {
-  const w = canvas.parentElement.clientWidth
-  const h = Math.round((w - 16) / L.MapModel.aspect + 16)
-  const dpr = Math.min(window.devicePixelRatio || 1, 3)
-  canvas.style.height = h + "px"
-  canvas.width = Math.round(w * dpr)
-  canvas.height = Math.round(h * dpr)
-  size = { w, h, dpr }
-  theme = colours()
-  layers.clear()
+// A local equirectangular projection (MapModel's longitude scale) centred on
+// a point, `scale` CSS pixels per degree of latitude, in a w x h box.
+function projection(lon0, lat0, scale, w, h) {
+  const k = L.MapModel.longitudeScale * scale
+  return {
+    w, h, scale,
+    x: (lon) => w / 2 + (lon - lon0) * k,
+    y: (lat) => h / 2 - (lat - lat0) * scale,
+    lon: (x) => lon0 + (x - w / 2) / k,
+    lat: (y) => lat0 - (y - h / 2) / scale,
+  }
 }
 
-const vp = () => L.MapModel.viewport(size.w, size.h)
-const project = (lat, lon) => L.MapModel.project(lat, lon, size.w, size.h)
-function mapRect() {
-  const v = vp(), view = L.MapModel.view
-  return { x: v.x, y: v.y, w: (view.east - view.west) * L.MapModel.longitudeScale * v.scale, h: (view.north - view.south) * v.scale }
+function makeView(canvasId, pinId, project) {
+  const canvas = $(canvasId)
+  return { canvas, ctx: canvas.getContext("2d"), pin: $(pinId), project, proj: null, dpr: 1, land: null, coast: null, dashed: null, layers: new Map(), margin: null }
+}
+function clearLayers(v) { v.layers.clear(); v.margin = null }
+const views = [
+  makeView("map", "pin", (w, h) => projection((VIEW.west + VIEW.east) / 2, (VIEW.south + VIEW.north) / 2, h / (VIEW.north - VIEW.south), w, h)),
+  makeView("inset", "inset-pin", (w, h) => projection(BORNHOLM.longitude, BORNHOLM.latitude, BORNHOLM.scale, w, h)),
+]
+
+function offscreen(v) {
+  const c = document.createElement("canvas")
+  c.width = v.canvas.width; c.height = v.canvas.height
+  const g = c.getContext("2d")
+  g.scale(v.dpr, v.dpr)
+  return { canvas: c, ctx: g }
 }
 
-function traceRings(c, rings) {
+function traceRings(c, p, rings) {
   c.beginPath()
   for (const ring of rings) {
-    ring.forEach((pt, k) => { const p = project(pt[1], pt[0]); k ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y) })
+    ring.forEach((pt, k) => { const x = p.x(pt[0]), y = p.y(pt[1]); k ? c.lineTo(x, y) : c.moveTo(x, y) })
     c.closePath()
   }
 }
 const neighbourRings = () => L.MapData.neighbours.flatMap((n) => n.rings)
 
-function gridGeometry(grid) {
-  const v = vp(), view = L.MapModel.view
-  const cellW = (grid.bounds.east - grid.bounds.west) / grid.cols * L.MapModel.longitudeScale * v.scale
-  const cellH = (grid.bounds.north - grid.bounds.south) / grid.rows * v.scale
-  const drawW = cellW * 1.15, drawH = cellH * 1.15
-  return {
-    x0: v.x + (grid.bounds.west - view.west) * L.MapModel.longitudeScale * v.scale,
-    y0: v.y + (view.north - grid.bounds.north) * v.scale,
-    cellW, cellH, drawW, drawH, padX: (drawW - cellW) / 2, padY: (drawH - cellH) / 2,
+// Sizes a view to its box and paints what stays put: the land under the
+// rain, and the coastlines over it (solid for the radar, finely dashed for
+// the nowcast, as the widget's Denmark outline).
+function setUpView(v) {
+  const w = v.canvas.clientWidth, h = v.canvas.clientHeight
+  if (!w || !h) return
+  v.dpr = Math.min(window.devicePixelRatio || 1, 3)
+  v.canvas.width = Math.round(w * v.dpr)
+  v.canvas.height = Math.round(h * v.dpr)
+  v.proj = v.project(w, h)
+  clearLayers(v)
+  const land = offscreen(v)
+  traceRings(land.ctx, v.proj, neighbourRings()); land.ctx.fillStyle = theme.neighbour; land.ctx.fill()
+  traceRings(land.ctx, v.proj, L.MapData.denmarkRings); land.ctx.fillStyle = theme.land; land.ctx.fill()
+  v.land = land.canvas
+  const coast = (dash) => {
+    const o = offscreen(v), c = o.ctx
+    c.lineJoin = "round"
+    traceRings(c, v.proj, neighbourRings()); c.strokeStyle = theme.neighbourCoast; c.lineWidth = 0.7; c.stroke()
+    traceRings(c, v.proj, L.MapData.denmarkRings); c.strokeStyle = theme.coast; c.lineWidth = 0.9
+    c.setLineDash(dash); c.stroke()
+    return o.canvas
   }
+  v.coast = coast([])
+  v.dashed = coast([1.5, 2.5])
+}
+
+function gridGeometry(p, grid) {
+  const b = grid.bounds
+  const cellW = (b.east - b.west) / grid.cols * L.MapModel.longitudeScale * p.scale
+  const cellH = (b.north - b.south) / grid.rows * p.scale
+  const drawW = cellW * 1.15, drawH = cellH * 1.15
+  return { x0: p.x(b.west), y0: p.y(b.north), cellW, cellH, drawW, drawH, padX: (drawW - cellW) / 2, padY: (drawH - cellH) / 2 }
 }
 
 function hatch(c, opacity) {
   const p = document.createElement("canvas")
   p.width = p.height = 6
   const g = p.getContext("2d")
-  g.strokeStyle = rgba(theme.fg, opacity)
+  g.strokeStyle = rgba(theme.ink, opacity)
   g.lineWidth = 1
   g.beginPath(); g.moveTo(0, 6); g.lineTo(6, 0); g.stroke()
   return c.createPattern(p, "repeat")
@@ -202,133 +242,106 @@ function drawCell(c, grid, geo, row, col, patterns) {
   }
 }
 
-function drawObserved(c, scan) {
-  const v = vp(), b = L.MapModel.bounds, m = mapRect(), grid = scan.grid
-  const corner = project(b.north, b.west)
-  const w = (b.east - b.west) * L.MapModel.longitudeScale * v.scale, h = (b.north - b.south) * v.scale
-  // the fixed-echo cells come from the filled grid, cut out of the image
-  const geo = gridGeometry(grid), cells = L.FixedEchoes.CELLS
+// An observed scan: DMI's picture, except at the fixed-echo cells, which are
+// painted from the filled grid (as the widget). `m`: the margin painted
+// around the view.
+function drawObserved(c, p, scan, m) {
+  const b = L.MapModel.bounds, grid = scan.grid, geo = gridGeometry(p, grid), cells = L.FixedEchoes.CELLS
   c.save()
   c.beginPath()
-  c.rect(m.x, m.y, m.w, m.h)
+  c.rect(-m, -m, p.w + 2 * m, p.h + 2 * m)
   for (const [r, col] of cells) {
     const x = geo.x0 + col * geo.cellW, y = geo.y0 + r * geo.cellH
     c.moveTo(x, y); c.lineTo(x, y + geo.cellH); c.lineTo(x + geo.cellW, y + geo.cellH); c.lineTo(x + geo.cellW, y); c.closePath()
   }
   c.clip("nonzero")
-  c.drawImage(scan.bitmap, corner.x, corner.y, w, h)
+  c.drawImage(scan.bitmap, p.x(b.west), p.y(b.north), p.x(b.east) - p.x(b.west), p.y(b.south) - p.y(b.north))
   c.restore()
   for (const [r, col] of cells) drawCell(c, grid, geo, r, col, null)
 }
 
-function rainLayer(i) {
-  if (layers.has(i)) return layers.get(i)
-  const f = state.frames[i]
-  const layer = document.createElement("canvas")
-  layer.width = canvas.width; layer.height = canvas.height
-  const c = layer.getContext("2d")
-  c.scale(size.dpr, size.dpr)
-  c.globalAlpha = f.kind === "forecast" ? 0.85 : 1
-  if (f.kind === "observed") drawObserved(c, f.scan)
-  else {
-    const geo = gridGeometry(f.grid), patterns = f.grid.fromEdge ? [0.35, 0.6, 0.9].map((o) => hatch(c, o)) : null
-    for (let r = 0; r < f.grid.rows; r++) for (let col = 0; col < f.grid.cols; col++) drawCell(c, f.grid, geo, r, col, patterns)
+// A nowcast step: its grid cell by cell, only the cells that reach the view
+// and its margin `m`.
+function drawForecast(c, p, grid, m) {
+  const geo = gridGeometry(p, grid), b = grid.bounds
+  const patterns = grid.fromEdge ? [0.35, 0.6, 0.9].map((o) => hatch(c, o)) : null
+  const colOf = (lon) => Math.floor((lon - b.west) / (b.east - b.west) * grid.cols)
+  const rowOf = (lat) => Math.floor((b.north - lat) / (b.north - b.south) * grid.rows)
+  const c0 = Math.max(0, colOf(p.lon(-m)) - 2), c1 = Math.min(grid.cols - 1, colOf(p.lon(p.w + m)) + 2)
+  const r0 = Math.max(0, rowOf(p.lat(-m)) - 2), r1 = Math.min(grid.rows - 1, rowOf(p.lat(p.h + m)) + 2)
+  for (let r = r0; r <= r1; r++) for (let col = c0; col <= c1; col++) drawCell(c, grid, geo, r, col, patterns)
+}
+
+// How far a frame's rain moves in one step on this view, at most, in CSS
+// pixels: the rain layers are painted that much past the view's edges, so a
+// gliding frame never shows a bare strip where it moved away from.
+function viewMargin(v) {
+  if (v.margin === null) {
+    let most = 0
+    for (const f of state.frames) {
+      if (!f.motion) continue
+      const geo = gridGeometry(v.proj, f.grid || f.scan.grid)
+      most = Math.max(most, Math.abs(f.motion.dx * geo.cellW), Math.abs(f.motion.dy * geo.cellH))
+    }
+    v.margin = Math.ceil(most) + 4
   }
-  layers.set(i, layer)
-  return layer
+  return v.margin
+}
+
+// Each frame's rain is painted once per view, then only moved (as the widget).
+function rainLayer(v, i) {
+  if (v.layers.has(i)) return v.layers.get(i)
+  const f = state.frames[i], m = viewMargin(v), o = document.createElement("canvas")
+  o.width = Math.round((v.proj.w + 2 * m) * v.dpr)
+  o.height = Math.round((v.proj.h + 2 * m) * v.dpr)
+  const c = o.getContext("2d")
+  c.scale(v.dpr, v.dpr)
+  c.translate(m, m)
+  c.globalAlpha = f.kind === "forecast" ? 0.85 : 1
+  if (f.kind === "observed") drawObserved(c, v.proj, f.scan, m)
+  else drawForecast(c, v.proj, f.grid, m)
+  v.layers.set(i, o)
+  return o
+}
+
+// The frame on screen, and how far it has glided along its motion (0 to <1):
+// the last frame, and a frame without a measured motion, step whole.
+function current() {
+  const n = state.frames.length
+  if (!n) return { f: null, i: 0, frac: 0 }
+  const i = Math.max(0, Math.min(n - 1, Math.floor(state.pos)))
+  const f = state.frames[i]
+  return { f, i, frac: i < n - 1 && f.motion ? state.pos - i : 0 }
+}
+
+function drawView(v, cur) {
+  if (!v.proj) return
+  const c = v.ctx, f = cur.f
+  c.setTransform(1, 0, 0, 1, 0, 0)
+  c.clearRect(0, 0, v.canvas.width, v.canvas.height)
+  c.drawImage(v.land, 0, 0)
+  if (f) {
+    const g = f.grid || f.scan.grid, geo = gridGeometry(v.proj, g)
+    const dx = cur.frac ? cur.frac * f.motion.dx * geo.cellW : 0, dy = cur.frac ? cur.frac * f.motion.dy * geo.cellH : 0
+    const layer = rainLayer(v, cur.i), m = viewMargin(v)
+    c.drawImage(layer, (dx - m) * v.dpr, (dy - m) * v.dpr)
+  }
+  c.drawImage(f && f.kind === "forecast" ? v.dashed : v.coast, 0, 0)
+  const p = state.place, pin = v.pin
+  const inside = p && v.proj && (() => { const x = v.proj.x(p.longitude), y = v.proj.y(p.latitude); return x >= 0 && x <= v.proj.w && y >= 0 && y <= v.proj.h })()
+  pin.hidden = !inside
+  if (inside) { pin.style.left = v.proj.x(p.longitude) + "px"; pin.style.top = v.proj.y(p.latitude) + "px" }
 }
 
 function draw() {
-  if (!size.w || !theme) return
-  const c = ctx, m = mapRect()
-  c.setTransform(size.dpr, 0, 0, size.dpr, 0, 0)
-  c.clearRect(0, 0, size.w, size.h)
-  c.save()
-  c.beginPath(); c.rect(m.x, m.y, m.w, m.h); c.clip()
-  traceRings(c, neighbourRings()); c.fillStyle = rgba(theme.fg, 0.045); c.fill()
-  traceRings(c, L.MapData.denmarkRings); c.fillStyle = rgba(theme.fg, 0.08); c.fill()
-
-  const f = state.frames[state.index]
-  const frac = glide(f)
-  if (f) {
-    const g = f.grid || f.scan.grid, v = vp()
-    let dx = 0, dy = 0
-    if (frac > 0) {
-      dx = frac * f.motion.dx * (g.bounds.east - g.bounds.west) / g.cols * L.MapModel.longitudeScale * v.scale
-      dy = frac * f.motion.dy * (g.bounds.north - g.bounds.south) / g.rows * v.scale
-    }
-    c.setTransform(1, 0, 0, 1, 0, 0)
-    c.drawImage(rainLayer(state.index), Math.round(dx * size.dpr), Math.round(dy * size.dpr))
-    c.setTransform(size.dpr, 0, 0, size.dpr, 0, 0)
-  }
-
-  traceRings(c, neighbourRings()); c.strokeStyle = rgba(theme.fg, 0.3); c.lineWidth = 0.8; c.setLineDash([]); c.stroke()
-  traceRings(c, L.MapData.denmarkRings); c.strokeStyle = rgba(theme.fg, 0.75); c.lineWidth = 1.2
-  if (f && f.kind === "forecast") c.setLineDash([1.5, 2.5])
-  c.stroke(); c.setLineDash([])
-  c.restore()
-  c.strokeStyle = rgba(theme.fg, 0.14); c.lineWidth = 1; c.strokeRect(m.x, m.y, m.w, m.h)
-
-  c.font = "9px " + getComputedStyle(document.body).fontFamily
-  c.textAlign = "center"; c.textBaseline = "middle"; c.fillStyle = rgba(theme.fg, 0.4)
-  for (const lab of L.MapData.labels) { const p = project(lab.lat, lab.lon); c.fillText(lab.name, p.x, p.y) }
-
-  if (state.place && L.MapModel.inView(state.place.latitude, state.place.longitude)) {
-    const p = project(state.place.latitude, state.place.longitude)
-    c.beginPath(); c.arc(p.x, p.y, 13, 0, 2 * Math.PI); c.fillStyle = rgba(theme.pin, 0.18); c.fill()
-    c.strokeStyle = rgba(theme.pin, 0.6); c.lineWidth = 1; c.stroke()
-    c.beginPath(); c.arc(p.x, p.y, 5, 0, 2 * Math.PI); c.fillStyle = theme.pin; c.fill()
-    c.strokeStyle = theme.surface; c.lineWidth = 2; c.stroke()
-  }
-  drawChrome(f)
-  drawGraph(f)
+  if (!theme) return
+  const cur = current()
+  for (const v of views) drawView(v, cur)
+  drawChip(cur)
+  drawGraph(cur)
 }
 
-// ---- The graph (graph.js, as PointGraph.qml) ----
-
-const graphCanvas = $("graph")
-const graphCtx = graphCanvas.getContext("2d")
-let graphSize = { w: 0, h: 0, dpr: 1 }
-
-// The box over Sweden, as the widget's (Panel.qml: 58.42 N 11.9 E to 56.35 N 16.42 E).
-function placeGraphBox() {
-  if (!size.w) return
-  const tl = project(58.42, 11.9), br = project(56.35, 16.42), box = $("graph-box").style
-  box.left = tl.x + "px"; box.top = tl.y + "px"
-  box.width = (br.x - tl.x) + "px"; box.height = (br.y - tl.y) + "px"
-}
-
-function sizeGraph() {
-  placeGraphBox()
-  const w = graphCanvas.clientWidth, h = graphCanvas.clientHeight
-  if (!w || !h) return
-  const dpr = Math.min(window.devicePixelRatio || 1, 3)
-  if (w === graphSize.w && h === graphSize.h && dpr === graphSize.dpr) return
-  graphCanvas.width = Math.round(w * dpr)
-  graphCanvas.height = Math.round(h * dpr)
-  graphSize = { w, h, dpr }
-}
-
-// the time the map shows, gliding between steps as the map does
-function cursorMs(f) {
-  if (!f) return -1
-  const t = Date.parse(f.time), next = state.frames[state.index + 1], g = glide(f)
-  return g > 0 && next ? t + g * (Date.parse(next.time) - t) : t
-}
-
-function drawGraph(f) {
-  if ($("graph-box").hidden || !state.series) return
-  sizeGraph()
-  if (!graphSize.w) return
-  const s = getComputedStyle(document.documentElement)
-  graphCtx.setTransform(graphSize.dpr, 0, 0, graphSize.dpr, 0, 0)
-  drawPointGraph(graphCtx, graphSize.w, graphSize.h, {
-    series: state.series, chance: state.chanceSteps, cursorMs: cursorMs(f), GraphModel: L.GraphModel,
-    fg: theme.fg, accent: s.getPropertyValue("--rain").trim(), chanceColor: s.getPropertyValue("--chance").trim(),
-    font: (graphSize.w < 260 ? "9px " : "11px ") + getComputedStyle(document.body).fontFamily, rgba, clock, shownMs,
-  })
-}
-
+// ---- The time chip and the graph (graph.js) ----
 
 // The time shown for a moment of the animation: to the nearest 10 minutes,
 // as the widget (Timeline.shownMs); the rain still glides on exactly.
@@ -339,51 +352,120 @@ function clock(ms) {
   return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0")
 }
 
-function drawChrome(f) {
-  const badge = $("badge")
-  badge.hidden = !f
-  if (f) {
-    badge.textContent = (f.kind === "observed" ? "PAST" : "PROJECTED") + "  " + clock(shownMs(cursorMs(f)))
-  }
-  const n = state.frames.length
-  const pos = n > 1 ? (state.index + glide(f)) / (n - 1) : 0
-  $("fill").style.width = (pos * 100) + "%"
-  const showNow = n > 1 && state.nowIndex > 0 && state.nowIndex < n
-  $("now-tick").hidden = $("now-label").hidden = !showNow
-  if (showNow) {
-    const x = state.nowIndex / (n - 1) * 100
-    $("now-tick").style.left = `calc(${x}% - 1px)`
-    $("now-label").style.left = x + "%"
-  }
+// the moment the map shows, gliding between steps as the map does
+function cursorMs(cur) {
+  if (!cur.f) return -1
+  const t = Date.parse(cur.f.time), next = state.frames[cur.i + 1]
+  return cur.frac > 0 && next ? t + cur.frac * (Date.parse(next.time) - t) : t
 }
 
-// ---- Playback (as PlaybackController.qml, gliding continuously) ----
-
-// How far the current frame has glided along its motion (0 to <1): the
-// last frame, and a frame without a measured motion, step whole.
-function glide(f) {
-  return f && f.motion && state.index < state.frames.length - 1 ? state.fraction : 0
+function drawChip(cur) {
+  $("chip").hidden = !cur.f
+  if (!cur.f) return
+  const projected = cur.f.kind === "forecast"
+  $("chip-kind").textContent = projected ? "PROJECTED" : "PAST"
+  $("chip-kind").classList.toggle("projected", projected)
+  $("chip-time").textContent = clock(shownMs(cursorMs(cur)))
 }
+
+const graphCanvas = $("graph"), graphCtx = graphCanvas.getContext("2d")
+let graphSize = { w: 0, h: 0, dpr: 1 }
+
+function sizeGraph() {
+  const w = graphCanvas.clientWidth, h = graphCanvas.clientHeight
+  const dpr = Math.min(window.devicePixelRatio || 1, 3)
+  if (!w || !h || (w === graphSize.w && h === graphSize.h && dpr === graphSize.dpr)) return
+  graphCanvas.width = Math.round(w * dpr)
+  graphCanvas.height = Math.round(h * dpr)
+  graphSize = { w, h, dpr }
+}
+
+function graphBars() {
+  const pts = state.series ? state.series.points : []
+  return state.frames.map((f) => {
+    const ms = Date.parse(f.time), p = pts.find((q) => q.ms === ms)
+    return { ms, kind: f.kind, mm: p ? p.mm : null }
+  })
+}
+
+function drawGraph(cur) {
+  sizeGraph()
+  if (!graphSize.w) return
+  const n = state.frames.length, wrap = $("graph-wrap")
+  wrap.setAttribute("aria-valuemax", String(Math.max(0, n - 1)))
+  wrap.setAttribute("aria-valuenow", String(cur.i))
+  if (cur.f) wrap.setAttribute("aria-valuetext", (cur.f.kind === "forecast" ? "Projected " : "Past ") + clock(shownMs(cursorMs(cur))))
+  graphCtx.setTransform(graphSize.dpr, 0, 0, graphSize.dpr, 0, 0)
+  drawBarGraph(graphCtx, graphSize.w, graphSize.h, {
+    bars: graphBars(), pos: Math.min(state.pos, Math.max(0, n - 1)),
+    nowMs: state.series ? state.series.nowMs : now(),
+    heightFraction: L.GraphModel.heightFraction, clock,
+    fontFamily: getComputedStyle(document.body).fontFamily, colours: theme,
+  })
+}
+
+// ---- Playback, and the graph as the timeline ----
 
 let last = 0
 function tick(t) {
   const dt = last ? Math.min(t - last, 100) : 0
   last = t
-  if (state.frames.length > 1 && state.playing && t >= state.holdUntil) {
-    state.fraction += dt / FRAME_MS
-    if (state.fraction >= 1) { state.fraction = 0; state.index = (state.index + 1) % state.frames.length }
+  const n = state.frames.length
+  if (n > 1 && state.playing && !state.dragging) {
+    state.pos += dt / FRAME_MS
+    if (state.pos >= n) state.pos -= n // the last frame holds one step, then the loop starts over
     draw()
   }
   requestAnimationFrame(tick)
 }
 
-function seekTo(x) {
-  const r = $("track").getBoundingClientRect(), n = state.frames.length
-  if (n < 2) return
-  state.index = Math.max(0, Math.min(n - 1, Math.round((x - r.left) / r.width * (n - 1))))
-  state.fraction = 0
-  state.holdUntil = performance.now() + 4000
-  draw()
+const PAUSE = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor"/></svg>'
+const PLAY = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>'
+
+function setPlaying(on) {
+  state.playing = on
+  $("play").innerHTML = on ? PAUSE : PLAY
+  $("play").setAttribute("aria-label", on ? "Pause" : "Play")
+}
+
+function setUpTimeline() {
+  const wrap = $("graph-wrap")
+  const posAt = (e) => {
+    const r = wrap.getBoundingClientRect()
+    return graphPosAt(e.clientX - r.left, r.width, state.frames.length)
+  }
+  wrap.addEventListener("pointerdown", (e) => {
+    if (!state.frames.length) return
+    setPlaying(false)
+    state.dragging = true
+    wrap.setPointerCapture(e.pointerId)
+    state.pos = posAt(e)
+    draw()
+  })
+  wrap.addEventListener("pointermove", (e) => {
+    if (!state.dragging) return
+    state.pos = posAt(e)
+    draw()
+  })
+  // let go: settle on the nearest real frame
+  const end = () => {
+    if (!state.dragging) return
+    state.dragging = false
+    state.pos = Math.round(state.pos)
+    draw()
+  }
+  wrap.addEventListener("pointerup", end)
+  wrap.addEventListener("pointercancel", end)
+  wrap.addEventListener("keydown", (e) => {
+    const n = state.frames.length
+    const to = { ArrowLeft: Math.round(state.pos) - 1, ArrowRight: Math.round(state.pos) + 1, Home: 0, End: n - 1 }[e.key]
+    if (to === undefined || !n) return
+    e.preventDefault()
+    setPlaying(false)
+    state.pos = Math.max(0, Math.min(n - 1, to))
+    draw()
+  })
+  $("play").onclick = () => setPlaying(!state.playing)
 }
 
 // ---- The place and the forecast (as Panel.qml) ----
@@ -400,21 +482,29 @@ function setPlace(place, save = true) {
   if (save) {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(place)) } catch (e) { /* private mode */ }
   }
-  showPlaces(false)
+  $("search").value = place.name
+  closeResults()
   updateForecast()
   draw()
 }
 
 function updateForecast() {
   const p = state.place
-  $("place-name").textContent = p ? p.name : "Pick a place"
-  $("change-place").hidden = !p
-  const ready = p && state.nowcast.length
-  $("summary").hidden = $("chances").hidden = $("graph-box").hidden = !ready
-  $("stale").hidden = true
   state.series = null
-  state.chanceSteps = []
-  if (!ready) return
+  $("stale").hidden = true
+  $("chances").hidden = true
+  if (!p) {
+    $("where").textContent = ""
+    $("headline").textContent = "Pick a place"
+    $("sentence").textContent = "Search above, tap the map, or use your location to see the rain there and what to expect over the next 90 minutes."
+    return
+  }
+  $("where").textContent = p.name + " · " + clock(now())
+  if (!state.nowcast.length) {
+    $("headline").textContent = state.error ? "No radar right now" : "Loading…"
+    $("sentence").textContent = state.error || "Reading DMI's latest radar scans."
+    return
+  }
   const PS = L.PointSeries, CM = L.ChanceModel
   const observed = state.items.filter((it) => state.scans[it.id]).map((it) => ({ time: it.datetime, grid: state.scans[it.id].grid }))
   const series = PS.build(observed, state.nowcast, p.latitude, p.longitude, now())
@@ -422,25 +512,27 @@ function updateForecast() {
   const rainChance = chance ? CM.rainWithin(chance, PS.coveredMinutes(series)) : null
   const dryBy = chance ? CM.dryForGoodBy(chance, 1 - PS.NO_RAIN_CHANCE) : undefined
   state.series = series
-  state.chanceSteps = chance ? chance.steps : []
-  sizeGraph()
-  $("summary").textContent = PS.summary(series, rainChance, dryBy)
+
+  // "Light rain now · may ease off": the headline, then the rest as a sentence
+  const [head, ...rest] = PS.summary(series, rainChance, dryBy).split(" · ")
+  const more = rest.join(", ")
+  $("headline").textContent = head
+  $("sentence").textContent = more ? more.charAt(0).toUpperCase() + more.slice(1) + "." : ""
+
   const parts = CM.parts(chance, PS.currentMm(series))
-  const box = $("chances")
-  box.replaceChildren()
-  box.hidden = !parts
+  $("chances").hidden = !parts
   if (parts) {
-    const title = document.createElement("span")
-    title.className = "title"; title.textContent = parts.title
-    box.append(title)
-    for (const it of parts.items) {
-      const cell = document.createElement("span")
-      cell.className = "cell"
-      cell.innerHTML = "<small></small><b></b>"
-      cell.querySelector("small").textContent = it.label
-      cell.querySelector("b").textContent = it.percent
-      box.append(cell)
-    }
+    const raining = parts.title !== "Rain within"
+    $("chances-title").textContent = raining ? "Chance it's dry for good" : "Chance of rain here"
+    $("tiles").replaceChildren(...parts.items.map((it) => {
+      const tile = document.createElement("div")
+      tile.className = "tile"
+      const b = document.createElement("b"), span = document.createElement("span")
+      b.textContent = it.percent
+      span.textContent = (raining ? "by " : "within ") + it.label
+      tile.append(b, span)
+      return tile
+    }))
   }
   const age = series.scanMs === null ? 0 : Math.round((now() - series.scanMs) / 60000)
   if (age > 45) {
@@ -449,98 +541,102 @@ function updateForecast() {
   }
 }
 
-function showPlaces(open) {
-  $("places").hidden = !open
-  $("places-hint").hidden = !!state.place
-  $("change-place").textContent = open && state.place ? "Done" : "Change place"
-  if (open) {
-    $("search").value = ""
-    $("results").replaceChildren()
-    $("locate-note").hidden = true
-    if (state.place) $("card").scrollIntoView({ behavior: "smooth", block: "start" })
-  }
+// A tap on the map (or the inset) picks the spot, if it is in Denmark.
+function pickOn(v, evt) {
+  if (!v.proj) return
+  const r = v.canvas.getBoundingClientRect()
+  const lat = v.proj.lat(evt.clientY - r.top), lon = v.proj.lon(evt.clientX - r.left)
+  if (!L.LocationModel.inDenmark(L.MapData.denmarkRings, lat, lon, 3)) return
+  setPlace({ name: L.LocationModel.nameForPoint(lat, lon, L.Towns.towns),
+    latitude: Math.round(lat * 1e4) / 1e4, longitude: Math.round(lon * 1e4) / 1e4 })
 }
 
-function pickOnMap(evt) {
-  const r = canvas.getBoundingClientRect()
-  const ll = L.MapModel.unproject(evt.clientX - r.left, evt.clientY - r.top, size.w, size.h)
-  if (!ll || !L.MapModel.inView(ll.latitude, ll.longitude)) return
-  if (!L.LocationModel.inDenmark(L.MapData.denmarkRings, ll.latitude, ll.longitude, 3)) return
-  setPlace({ name: L.LocationModel.nameForPoint(ll.latitude, ll.longitude, L.Towns.towns),
-    latitude: Math.round(ll.latitude * 1e4) / 1e4, longitude: Math.round(ll.longitude * 1e4) / 1e4 })
+// ---- Search and "my location" ----
+
+function showResults(nodes) {
+  $("results").replaceChildren(...nodes)
+  $("results").hidden = !nodes.length
+}
+function closeResults() { $("results").hidden = true }
+function note(text) {
+  const d = document.createElement("div")
+  d.className = "note"; d.setAttribute("role", "status"); d.textContent = text
+  return d
+}
+function choice(label, onPick) {
+  const b = document.createElement("button")
+  b.textContent = label
+  b.onclick = onPick
+  return b
 }
 
-// "My location": the device's own position, after the browser asks. The chip
-// says it is working, and a failure says why, next to the chips.
-function useMyLocation(chip) {
-  const note = $("locate-note")
-  const done = (message) => {
-    chip.removeAttribute("aria-busy")
-    chip.textContent = "📍 My location"
-    note.hidden = !message
-    note.textContent = message || ""
+// The towns matching what is typed; with nothing typed (or the place's own
+// name), the big cities.
+function renderResults() {
+  const q = $("search").value.trim()
+  if (!q || (state.place && q === state.place.name)) {
+    showResults(L.LocationModel.cities.slice(0, 5).map((c) =>
+      choice(c.name, () => setPlace({ name: c.name, latitude: c.latitude, longitude: c.longitude }))))
+    return []
   }
+  const matches = L.LocationModel.searchTowns(L.Towns.towns, q, 6)
+  showResults(matches.length ? matches.map((m) => choice(m.label, () => setPlace(placeOf(m)))) : [note("No Danish town or place by that name.")])
+  return matches
+}
+
+// "My location": the device's own position, after the browser asks. A failure says why.
+function useMyLocation() {
+  const button = $("locate")
+  const fail = (message) => { button.removeAttribute("aria-busy"); showResults([note(message)]) }
   if (!navigator.geolocation || !window.isSecureContext) {
-    done("This browser cannot share your location here. Pick a place instead.")
+    fail("This browser cannot share your location here. Search for a place instead.")
     return
   }
-  chip.setAttribute("aria-busy", "true")
-  chip.textContent = "📍 Locating…"
-  note.hidden = true
+  button.setAttribute("aria-busy", "true")
+  showResults([note("Finding your location…")])
   navigator.geolocation.getCurrentPosition((pos) => {
+    button.removeAttribute("aria-busy")
     const lat = pos.coords.latitude, lon = pos.coords.longitude
     if (!L.LocationModel.inDenmark(L.MapData.denmarkRings, lat, lon, 3)) {
-      done("You seem to be outside Denmark. Pick a place instead.")
+      fail("You seem to be outside Denmark. Search for a place instead.")
       return
     }
-    done("")
     setPlace({ name: L.LocationModel.nameForPoint(lat, lon, L.Towns.towns), latitude: Math.round(lat * 1e4) / 1e4,
       longitude: Math.round(lon * 1e4) / 1e4 })
   }, (err) => {
-    done(err && err.code === 1
-      ? "Location access is blocked for this site. Allow it in your browser's site settings (the icon left of the address), or pick a place."
+    fail(err && err.code === 1
+      ? "Location access is blocked for this site. Allow it in your browser's site settings, or search for a place."
       : err && err.code === 3
-        ? "Finding your location took too long. Try again, or pick a place."
-        : "Your device could not tell where it is (is location turned on?). Pick a place instead.")
+        ? "Finding your location took too long. Try again, or search for a place."
+        : "Your device could not tell where it is (is location turned on?). Search for a place instead.")
   }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 })
 }
 
-function setUpPlaces() {
-  const chips = $("chips")
-  const mine = document.createElement("button")
-  mine.className = "chip"; mine.textContent = "📍 My location"
-  mine.onclick = () => useMyLocation(mine)
-  if (navigator.geolocation) chips.append(mine)
-  for (const c of L.LocationModel.cities.slice(0, 4)) {
-    const b = document.createElement("button")
-    b.className = "chip"; b.textContent = c.name
-    b.onclick = () => setPlace({ name: c.name, latitude: c.latitude, longitude: c.longitude })
-    chips.append(b)
-  }
-  const search = $("search"), results = $("results")
-  const render = () => {
-    const matches = L.LocationModel.searchTowns(L.Towns.towns, search.value, 6)
-    results.replaceChildren(...matches.map((m) => {
-      const b = document.createElement("button")
-      b.textContent = m.label
-      b.onclick = () => setPlace(placeOf(m))
-      return b
-    }))
-    return matches
-  }
-  search.addEventListener("input", render)
+function setUpSearch() {
+  const search = $("search")
+  search.addEventListener("focus", () => { search.select(); renderResults() })
+  search.addEventListener("input", renderResults)
   search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { const m = render(); if (m.length) setPlace(placeOf(m[0])) }
-    if (e.key === "Escape") { search.value = ""; render() }
+    if (e.key === "Enter") { const m = renderResults(); if (m.length) setPlace(placeOf(m[0])); search.blur() }
+    if (e.key === "Escape") { search.value = state.place ? state.place.name : ""; closeResults(); search.blur() }
   })
-  $("change-place").onclick = () => showPlaces($("places").hidden)
-  $("place-button").onclick = () => showPlaces($("places").hidden)
+  // a tap anywhere else closes the list
+  document.addEventListener("pointerdown", (e) => {
+    if (!e.target.closest(".search")) {
+      closeResults()
+      if (state.place && document.activeElement !== search) search.value = state.place.name
+    }
+  })
+  $("locate").onclick = useMyLocation
 }
 
-const PAUSE = '<svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="2" width="3.5" height="12" rx="1" fill="currentColor"/><rect x="9.5" y="2" width="3.5" height="12" rx="1" fill="currentColor"/></svg>'
-const PLAY = '<svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 2.5v11a.8.8 0 0 0 1.2.7l9-5.5a.8.8 0 0 0 0-1.4l-9-5.5A.8.8 0 0 0 4 2.5z" fill="currentColor"/></svg>'
-
 // ---- Start ----
+
+function resize() {
+  for (const v of views) setUpView(v)
+  graphSize = { w: 0, h: 0, dpr: 1 }
+  draw()
+}
 
 async function main() {
   const names = ["MapModel", "MapData", "ColorScale", "FixedEchoes", "Interpolation", "Timeline", "PointSeries",
@@ -553,8 +649,9 @@ async function main() {
   $("legend-bar").style.background = "linear-gradient(90deg," + stops.slice(1).map((s) =>
     `rgba(${s.r},${s.g},${s.b},${Math.max(0.35, s.a / 255)}) ${(Math.log(s.mm / 0.1) / Math.log(top / 0.1) * 100).toFixed(1)}%`).join(",") + ")"
 
-  $("play").innerHTML = PAUSE
-  setUpPlaces()
+  setPlaying(true)
+  setUpSearch()
+  setUpTimeline()
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "null")
     if (saved && typeof saved.latitude === "number") state.place = saved
@@ -565,28 +662,21 @@ async function main() {
     const m = L.LocationModel.searchTowns(L.Towns.towns, asked, 1)[0]
     if (m) state.place = placeOf(m)
   }
-  showPlaces(!state.place)
+  if (state.place) $("search").value = state.place.name
 
+  theme = colours()
   resize()
-  window.addEventListener("resize", () => { resize(); sizeGraph(); draw() })
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { theme = colours(); layers.clear(); draw() })
-  canvas.addEventListener("click", pickOnMap)
-  $("play").onclick = () => {
-    state.playing = !state.playing
-    state.holdUntil = 0
-    $("play").innerHTML = state.playing ? PAUSE : PLAY
-    $("play").setAttribute("aria-label", state.playing ? "Pause" : "Play")
-  }
-  const track = $("track")
-  track.addEventListener("pointerdown", (e) => { track.setPointerCapture(e.pointerId); seekTo(e.clientX) })
-  track.addEventListener("pointermove", (e) => { if (e.buttons) seekTo(e.clientX) })
+  window.addEventListener("resize", resize)
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { theme = colours(); resize() })
+  views[0].canvas.addEventListener("click", (e) => pickOn(views[0], e))
+  views[1].canvas.addEventListener("click", (e) => pickOn(views[1], e))
 
   updateForecast()
   draw()
   requestAnimationFrame(tick)
   await refresh()
   setInterval(refresh, REFRESH_MS)
-  setInterval(updateForecast, 60000) // the clock moves on
+  setInterval(() => { updateForecast(); draw() }, 60000) // the clock moves on
 }
 
 main().catch((e) => { $("map-status").textContent = "Something went wrong: " + (e.message || e); console.error(e) })

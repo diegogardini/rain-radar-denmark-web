@@ -1,156 +1,119 @@
-// The rain at one place over a real time axis, as the widget's PointGraph.qml
-// draws it (keep the two in step): the last hour observed (solid), the nowcast
-// (finely dashed), a strip under the axis shaded by the chance of rain from
-// "now" on, a "now" marker, and a cursor that follows the map's playback with
-// its reading. Uses the widget's GraphModel.js for the scale and the curve.
+// The rain at the place, one bar per frame of the map: the last hour of radar
+// on a shaded band, then the nowcast in the accent colour. The bars use the
+// widget's scale (GraphModel.heightFraction: mm / (2 + mm), never off the
+// top), and the graph is the map's timeline: a cursor and a handle show the
+// frame on the map, and app.js lets the viewer drag along it.
 "use strict"
 
-const PAST_MS = 60 * 60000, AHEAD_MS = 90 * 60000
-const LEVELS = [
-  { value: 0, label: "" }, { value: 0.1, label: "0.1" }, { value: 1, label: "1" },
-  { value: 2.5, label: "2.5" }, { value: 10, label: "10" }, { value: 50, label: "50" },
-]
+const GRAPH_TOP = 22, GRAPH_BASE = 96, LABEL_Y = 113
 
-// Plot rectangle and time window for a canvas of `w` x `h` CSS pixels.
-function graphLayout(w, h, series) {
-  const compact = w < 260, stripH = 9
-  const plotLeft = 10, plotRight = w - 30, plotTop = compact ? 32 : 28, plotBottom = h - (24 + stripH + 4)
-  const windowStart = series && series.nowMs !== null ? series.nowMs - PAST_MS : 0
-  const windowEnd = series && series.nowMs !== null ? series.nowMs + AHEAD_MS : 1
-  const xFor = (ms) => plotLeft + (ms - windowStart) / (windowEnd - windowStart) * (plotRight - plotLeft)
-  const msFor = (x) => windowStart + (x - plotLeft) / (plotRight - plotLeft) * (windowEnd - windowStart)
-  return { compact, stripH, plotLeft, plotRight, plotTop, plotBottom, windowStart, windowEnd, xFor, msFor }
+// The frame position (0 = the first bar's centre) under x, for a graph `w` wide with `n` bars.
+function graphPosAt(x, w, n) {
+  return Math.max(0, Math.min(n - 1, x / w * n - 0.5))
 }
 
-// opts: {series, chance, cursorMs, GraphModel, fg, accent, chanceColor, font, rgba(colour, alpha), clock(ms)}
-function drawPointGraph(ctx, w, h, opts) {
-  const G = opts.GraphModel, a = opts.rgba, fg = opts.fg, accent = opts.accent, series = opts.series
-  const L = graphLayout(w, h, series)
-  const { plotLeft, plotRight, plotTop, plotBottom, stripH, xFor, compact } = L
+// opts: {bars: [{ms, mm (null = no reading), kind: "observed"|"forecast"}], pos, nowMs,
+//        heightFraction(mm), clock(ms), font, fontFamily,
+//        colours: {ink, muted, accent, past, dry, band, grid, axis, surface}}
+function drawBarGraph(ctx, w, h, opts) {
+  const bars = opts.bars, n = bars.length, c = opts.colours
   ctx.clearRect(0, 0, w, h)
-  if (plotRight <= plotLeft || plotBottom <= plotTop) return
-  ctx.font = opts.font
-  ctx.textBaseline = "middle"
-  ctx.textAlign = "left"
+  if (!n) return
+  const slot = w / n, barW = Math.min(14, slot * 0.64), plotH = GRAPH_BASE - GRAPH_TOP
+  const observed = bars.filter((b) => b.kind === "observed").length
+  const centre = (i) => (i + 0.5) * slot
+  ctx.textBaseline = "alphabetic"
 
-  // a scale label too close to the one below it (a small graph, on a phone) or
-  // to the unit above is left out; its line stays
-  const gap = parseFloat(opts.font) + 1
-  let lastLabelY = Infinity
-  for (const lv of LEVELS) {
-    const y = G.yFor(lv.value, plotTop, plotBottom)
-    ctx.strokeStyle = a(fg, lv.value === 0 ? 0.35 : 0.12)
-    ctx.lineWidth = 1
-    ctx.setLineDash(lv.value === 0 ? [] : [3, 5])
-    ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotRight, y); ctx.stroke()
-    if (lv.label && lastLabelY - y >= gap && y - (plotTop - 8) >= gap) {
-      ctx.fillStyle = a(fg, 0.55)
-      ctx.fillText(lv.label, plotRight + 6, y)
-      lastLabelY = y
-    }
+  // the past hour's band
+  if (observed) {
+    ctx.fillStyle = c.band
+    roundRect(ctx, 0, 0, observed * slot, GRAPH_BASE, 8)
+    ctx.fill()
   }
+
+
+  // 1 mm/h, and the axis
+  const oneY = GRAPH_BASE - opts.heightFraction(1) * plotH
+  ctx.strokeStyle = c.grid; ctx.lineWidth = 1; ctx.setLineDash([2, 4])
+  line(ctx, 0, oneY, w, oneY)
   ctx.setLineDash([])
-  ctx.fillStyle = a(fg, 0.55)
-  ctx.fillText("mm/h", plotRight + 2, plotTop - 8)
+  ctx.fillStyle = c.muted; ctx.textAlign = "right"
+  ctx.font = "10px " + opts.fontFamily
+  ctx.fillText("1 mm/h", w, oneY - 5)
+  ctx.strokeStyle = c.axis
+  line(ctx, 0, GRAPH_BASE + 0.5, w, GRAPH_BASE + 0.5)
 
-  const pts = series && series.points
-  if (!pts || !pts.length || series.nowMs === null) return
-
-  // time axis: the hour marks, and "now" (an hour mark that would collide with it is left out)
-  ctx.textBaseline = "top"; ctx.textAlign = "center"; ctx.fillStyle = a(fg, 0.55)
-  const nowX = xFor(series.nowMs), labelY = plotBottom + stripH + 12
-  if (compact) {
-    for (let m = 30; m * 60000 <= AHEAD_MS; m += 30) ctx.fillText(m + "m", xFor(series.nowMs + m * 60000), labelY)
-  } else {
-    for (let t = Math.ceil(L.windowStart / 3600000) * 3600000; t <= L.windowEnd; t += 3600000) {
-      const hx = xFor(t)
-      const room = (ctx.measureText(opts.clock(t)).width + ctx.measureText("now").width) / 2 + 4
-      if (Math.abs(hx - nowX) < room || hx < plotLeft + 14 || hx > plotRight - 14) continue
-      ctx.fillText(opts.clock(t), hx, labelY)
-    }
-  }
-
-  const xy = pts.map((p) => ({ x: xFor(p.ms), y: G.yFor(p.mm, plotTop, plotBottom) }))
-  const tangents = G.tangents(xy)
-  let lastObserved = -1, firstNowcast = -1, lastNowcast = -1
-  pts.forEach((p, i) => {
-    if (p.kind === "observed") lastObserved = i
-    else if (p.kind === "nowcast") { lastNowcast = i; if (firstNowcast < 0) firstNowcast = i }
+  // the bars: grey for the radar, the accent for the nowcast, a stub when dry
+  bars.forEach((b, i) => {
+    if (b.mm === null || b.mm === undefined) return
+    const wet = b.mm > 0.02
+    const bh = wet ? Math.max(3, opts.heightFraction(b.mm) * plotH) : 2
+    ctx.fillStyle = !wet ? c.dry : b.kind === "observed" ? c.past : c.accent
+    roundRect(ctx, centre(i) - barW / 2, GRAPH_BASE - bh, barW, bh, Math.min(3, barW / 2))
+    ctx.fill()
   })
-  const trace = (from, to) => {
-    ctx.moveTo(xy[from].x, xy[from].y)
-    for (let i = from; i < to; i++) {
-      const dx = xy[i + 1].x - xy[i].x
-      ctx.bezierCurveTo(xy[i].x + dx / 3, xy[i].y + tangents[i] * dx / 3,
-        xy[i + 1].x - dx / 3, xy[i + 1].y - tangents[i + 1] * dx / 3, xy[i + 1].x, xy[i + 1].y)
-    }
-  }
-  const fillUnder = (from, to, top, bottom) => {
-    const grad = ctx.createLinearGradient(0, plotTop, 0, plotBottom)
-    grad.addColorStop(0, top); grad.addColorStop(1, bottom)
-    ctx.fillStyle = grad
-    ctx.beginPath(); trace(from, to)
-    ctx.lineTo(xy[to].x, plotBottom); ctx.lineTo(xy[from].x, plotBottom); ctx.closePath(); ctx.fill()
-  }
-  const stroke = (from, to, dash, colour) => {
-    ctx.setLineDash(dash); ctx.strokeStyle = colour; ctx.lineWidth = 2
-    ctx.beginPath(); trace(from, to); ctx.stroke(); ctx.setLineDash([])
-  }
-  if (lastObserved >= 1) fillUnder(0, lastObserved, a(accent, 0.42), a(accent, 0.10))
-  if (firstNowcast >= 0) fillUnder(Math.max(0, firstNowcast - 1), lastNowcast, a(accent, 0.20), a(accent, 0.05))
-  ctx.lineJoin = "round"; ctx.lineCap = "round"
-  if (lastObserved >= 1) stroke(0, lastObserved, [], accent)
-  if (firstNowcast >= 0) stroke(Math.max(0, firstNowcast - 1), lastNowcast, [1.5, 2.5], a(accent, 0.85))
 
-  // the chance of rain: a strip under the axis from "now" on
-  const chance = opts.chance || []
-  if (chance.length) {
-    const sy = plotBottom + 3
-    ctx.fillStyle = a(fg, 0.07)
-    ctx.fillRect(nowX, sy, plotRight - nowX, stripH)
-    for (const c of G.chanceFromNow(chance, series.nowMs)) {
-      const x0 = Math.max(nowX, xFor(c.ms - 5 * 60000)), x1 = Math.min(plotRight, xFor(c.ms + 5 * 60000))
-      if (x1 <= x0 || c.chance <= 0) continue
-      ctx.fillStyle = a(opts.chanceColor, G.stripAlpha(c.chance))
-      ctx.fillRect(x0, sy, x1 - x0, stripH)
-    }
-    ctx.fillStyle = a(opts.chanceColor, 0.9); ctx.textAlign = "right"; ctx.textBaseline = "middle"
-    const label = ctx.measureText("chance of rain").width <= nowX - plotLeft - 5 ? "chance of rain" : "chance"
-    ctx.fillText(label, nowX - 5, sy + stripH / 2)
+  // times on the half hour, under their own bars, in the bars' colours
+  ctx.textAlign = "center"
+  ctx.font = "500 11px " + opts.fontFamily
+  let lastRight = -Infinity
+  bars.forEach((b, i) => {
+    if (new Date(b.ms).getMinutes() % 30) return
+    const text = opts.clock(b.ms), tw = ctx.measureText(text).width
+    const x = Math.max(tw / 2, Math.min(w - tw / 2, centre(i))) // kept inside the graph
+    if (x - tw / 2 < lastRight + 6) return
+    ctx.fillStyle = b.kind === "observed" ? c.muted : c.accent
+    ctx.fillText(text, x, LABEL_Y)
+    lastRight = x + tw / 2
+  })
+
+  // the top row: "Past hour", "Now" over its moment, "Next 90 min"
+  const nowX = xForMs(bars, opts.nowMs, slot)
+  ctx.font = "700 11px " + opts.fontFamily
+  const nowW = ctx.measureText("Now").width
+  const nowLabelX = nowX === null ? null : Math.max(nowW / 2, Math.min(w - nowW / 2, nowX))
+  const clear = (x0, x1) => nowLabelX === null || x1 < nowLabelX - nowW / 2 - 6 || x0 > nowLabelX + nowW / 2 + 6
+  ctx.font = "600 11px " + opts.fontFamily
+  ctx.textAlign = "left"; ctx.fillStyle = c.muted
+  if (observed && clear(8, 8 + ctx.measureText("Past hour").width)) ctx.fillText("Past hour", 8, 16)
+  ctx.textAlign = "right"; ctx.fillStyle = c.accent
+  if (observed < n && clear(w - ctx.measureText("Next 90 min").width, w)) ctx.fillText("Next 90 min", w, 16)
+  if (nowX !== null) {
+    ctx.strokeStyle = c.ink; ctx.setLineDash([2, 3])
+    line(ctx, nowX, GRAPH_TOP, nowX, GRAPH_BASE)
+    ctx.setLineDash([])
+    ctx.font = "700 11px " + opts.fontFamily
+    ctx.textAlign = "center"; ctx.fillStyle = c.ink
+    ctx.fillText("Now", nowLabelX, 16)
   }
 
-  ctx.strokeStyle = a(fg, 0.55); ctx.lineWidth = 1
-  ctx.beginPath(); ctx.moveTo(nowX, plotTop); ctx.lineTo(nowX, plotBottom); ctx.stroke()
-  ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillStyle = a(fg, 0.8)
-  ctx.fillText("now", nowX, labelY)
+  // the frame on the map: a thin cursor and the handle (they glide with
+  // playback; a filled column there read as a tall bar of rain)
+  ctx.strokeStyle = c.ink; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.55
+  line(ctx, centre(opts.pos), GRAPH_TOP, centre(opts.pos), GRAPH_BASE)
+  ctx.globalAlpha = 1
+  ctx.beginPath()
+  ctx.arc(centre(opts.pos), GRAPH_BASE, 6, 0, 2 * Math.PI)
+  ctx.fillStyle = c.ink; ctx.fill()
+  ctx.lineWidth = 2; ctx.strokeStyle = c.surface; ctx.stroke()
+}
 
-  // the playback cursor and its reading: the time, the rain (blue) and, ahead of now, the chance (amber)
-  const cursorMs = opts.cursorMs
-  if (cursorMs >= L.windowStart && cursorMs <= L.windowEnd) {
-    let near = 0, gap = Infinity
-    pts.forEach((p, i) => { const g = Math.abs(p.ms - cursorMs); if (g < gap) { gap = g; near = i } })
-    const cx = xFor(cursorMs)
-    ctx.strokeStyle = a(accent, 0.9); ctx.lineWidth = 1
-    ctx.beginPath(); ctx.moveTo(cx, plotTop); ctx.lineTo(cx, plotBottom); ctx.stroke()
-    ctx.fillStyle = accent
-    ctx.beginPath(); ctx.arc(cx, xy[near].y, 3.5, 0, 2 * Math.PI); ctx.fill()
-    const p = pts[near]
-    const parts = [
-      // the time to the nearest 10 minutes, as the map's badge (the cursor still glides)
-      { text: opts.clock(opts.shownMs ? opts.shownMs(cursorMs) : cursorMs) + (compact ? " " : "  "), colour: a(fg, 0.9) },
-      { text: p.mm.toFixed(p.mm < 10 ? 1 : 0) + " mm/h", colour: accent },
-    ]
-    if (p.kind === "nowcast" && p.ms >= series.nowMs && chance.length) {
-      let best = null, bestGap = Infinity
-      for (const c of chance) { const g = Math.abs(c.ms - p.ms); if (g < bestGap) { bestGap = g; best = c } }
-      if (best && bestGap < 6 * 60000) {
-        parts.push({ text: compact ? " · " : "  ·  ", colour: a(fg, 0.5) })
-        parts.push({ text: Math.round(best.chance * 100) + (compact ? "%" : "% chance"), colour: opts.chanceColor })
-      }
-    }
-    const width = parts.reduce((s, q) => s + ctx.measureText(q.text).width, 0)
-    let lx = Math.max(plotLeft, Math.min(plotRight - width, cx - width / 2))
-    ctx.textBaseline = "middle"; ctx.textAlign = "left"
-    for (const q of parts) { ctx.fillStyle = q.colour; ctx.fillText(q.text, lx, plotTop - 22); lx += ctx.measureText(q.text).width }
+// x of a moment between the bars' times (10 minutes apart), or null outside them.
+function xForMs(bars, ms, slot) {
+  if (typeof ms !== "number") return null
+  for (let i = 0; i + 1 < bars.length; i++) {
+    if (ms >= bars[i].ms && ms <= bars[i + 1].ms)
+      return (i + 0.5 + (ms - bars[i].ms) / (bars[i + 1].ms - bars[i].ms)) * slot
   }
+  return null
+}
+
+function line(ctx, x0, y0, x1, y1) {
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke()
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath()
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r)
+  else ctx.rect(x, y, w, h)
 }

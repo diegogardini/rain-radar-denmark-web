@@ -5,159 +5,157 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Rain Radar Denmark</title>
 <meta name="description" content="Will it rain here, and when? DMI's live rain radar over Denmark, a 90-minute nowcast and the chance of rain at your place.">
-<meta name="theme-color" content="#1a1b26" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f5f6fa" media="(prefers-color-scheme: light)">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3c5 7 9 12 9 17a9 9 0 0 1-18 0c0-5 4-10 9-17z' fill='%237aa2f7'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#121A21" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#DCE5EB" media="(prefers-color-scheme: light)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3c5 7 9 12 9 17a9 9 0 0 1-18 0c0-5 4-10 9-17z' fill='%232F6FDB'/%3E%3C/svg%3E">
 <style>
+/* Light or dark follows the device (app.js redraws the map and graph when it
+   changes). The rain keeps the widget's colour scale in both. */
 :root {
-  color-scheme: dark;
-  --bg: #1a1b26; --surface: #1f2233; --line: #2c3047; --fg: #c8d0f0; --muted: #7a82a8;
-  --rain: #7aa2f7; --chance: #e0af68; --urgent: #f7768e;
-  --radius: 10px;
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  color-scheme: light;
+  --bg: #F4F6F8; --surface: #FFFFFF; --ink: #12181D; --text2: #3A4651; --muted: #5B6875;
+  --accent: #2F6FDB; --urgent: #B42318;
+  --sea: #DCE5EB; --land: #FFFFFF; --neighbour: #E9EEF1; --coast: #7E8E9B; --neighbour-coast: #C5CFD6;
+  --tile: #F4F6F8; --band: #F1F4F6; --grid: #E3E8EC; --axis: #D5DCE2; --past: #AEBBC6; --dry: #E3E8EC;
+  --pill: #FFFFFF; --pill-border: transparent; --pill-button: #EEF2F5; --chip: rgba(255,255,255,0.92);
+  --play: #12181D; --on-play: #FFFFFF; --halo: rgba(47,111,219,0.18);
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: dark) {
   :root {
-    color-scheme: light;
-    --bg: #f5f6fa; --surface: #ffffff; --line: #dfe2ec; --fg: #1f2335; --muted: #6a7090;
-    --rain: #2f5fd0; --chance: #a86400; --urgent: #c4314b;
+    color-scheme: dark;
+    --bg: #0E1216; --surface: #171D23; --ink: #EEF2F5; --text2: #B4C0CA; --muted: #93A1AD;
+    --accent: #7CC4FF; --urgent: #FF8A80;
+    --sea: #121A21; --land: #222B33; --neighbour: #1A2128; --coast: #5F6F7C; --neighbour-coast: #2C3640;
+    --tile: #1F272E; --band: #1F272E; --grid: #2C3640; --axis: #3A4651; --past: #5A6874; --dry: #2C3640;
+    --pill: #171D23; --pill-border: #232C34; --pill-button: #232C34; --chip: rgba(14,18,22,0.86);
+    --play: #EEF2F5; --on-play: #0E1216; --halo: rgba(124,196,255,0.22);
   }
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body {
-  margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font);
-  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
-}
-.page { max-width: 600px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 4px; }
-header h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: .2px; }
-header span { color: var(--muted); font-size: 13px; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.4 var(--font); }
+button { font: inherit; color: inherit; }
+.app { max-width: 480px; margin: 0 auto; min-height: 100dvh; background: var(--surface); }
 
-.map-wrap { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; touch-action: manipulation; }
-#map { display: block; width: 100%; cursor: crosshair; }
-.badge {
-  position: absolute; left: 10px; bottom: 10px; padding: 3px 8px; border-radius: 5px;
-  font: 700 11px/1.3 var(--mono); letter-spacing: 1px; color: var(--fg);
-  background: color-mix(in srgb, var(--surface) 80%, transparent); border: 1px solid color-mix(in srgb, var(--fg) 30%, transparent);
-}
-.map-status {
-  position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px;
-  color: var(--muted); font-size: 14px; pointer-events: none;
-}
-.map-hint { position: absolute; right: 10px; bottom: 10px; color: var(--muted); font-size: 11px; pointer-events: none; }
+/* ---- the map ---- */
+.map { position: relative; aspect-ratio: 390 / 441; background: var(--sea); overflow: hidden; touch-action: manipulation; }
+.map canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#map { cursor: crosshair; }
+.status { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); font-size: 15px; pointer-events: none; }
+.pin { position: absolute; width: 0; height: 0; pointer-events: none; }
+.pin::before { content: ""; position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; border-radius: 50%; background: var(--halo); }
+.pin::after { content: ""; position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 3px solid var(--surface); box-sizing: border-box; }
 
-.timeline { display: flex; align-items: center; gap: 10px; padding: 0 2px; }
-#play {
-  flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line);
-  background: var(--surface); color: var(--fg); font-size: 14px; cursor: pointer;
-}
-.track { position: relative; flex: 1; height: 36px; cursor: pointer; touch-action: none; }
-.track .rail, .track .fill { position: absolute; left: 0; top: 16px; height: 4px; border-radius: 2px; }
-.track .rail { right: 0; background: var(--line); }
-.track .fill { background: var(--rain); width: 0; }
-.track .now { position: absolute; top: 10px; width: 2px; height: 16px; background: var(--fg); border-radius: 1px; }
-.track .now-label { position: absolute; top: 26px; transform: translateX(-50%); font-size: 10px; color: var(--muted); }
+.inset { position: absolute; right: 16px; top: calc(max(16px, env(safe-area-inset-top)) + 64px); width: 64px; height: 68px; border-radius: 12px; overflow: hidden; background: var(--sea); border: 1px solid var(--neighbour-coast); cursor: crosshair; }
+.inset .pin::before { left: -10px; top: -10px; width: 20px; height: 20px; }
+.inset .pin::after { left: -5px; top: -5px; width: 10px; height: 10px; border-width: 2px; }
 
-.legend { padding: 0 2px; }
-.legend .bar { height: 8px; border-radius: 4px; }
-.legend .words { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 3px; }
-.legend .edge { display: none; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; margin-top: 6px; }
-.legend .edge.on { display: flex; }
-.legend .edge i { width: 22px; height: 10px; border: 1px solid var(--line); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--fg) 60%, transparent) 0 1px, transparent 1px 4px); }
+.search { position: absolute; left: 16px; right: 16px; top: max(16px, env(safe-area-inset-top)); z-index: 2; }
+.pill { height: 48px; border-radius: 24px; background: var(--pill); border: 1px solid var(--pill-border); display: flex; align-items: center; gap: 10px; padding: 0 6px 0 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.pill svg { flex: none; }
+.pill input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font: 500 16px var(--font); color: var(--ink); }
+.pill input::placeholder { color: var(--muted); }
+.icon-button { flex: none; width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--pill-button); display: grid; place-items: center; padding: 0; cursor: pointer; color: var(--accent); }
+.icon-button[aria-busy="true"] { opacity: 0.6; cursor: progress; }
+.results { margin-top: 8px; background: var(--pill); border: 1px solid var(--pill-border); border-radius: 16px; padding: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+.results button { display: block; width: 100%; text-align: left; padding: 10px 12px; min-height: 44px; border: 0; border-radius: 10px; background: none; cursor: pointer; }
+.results button:hover, .results button:focus-visible { background: var(--tile); outline: none; }
+.results .note { padding: 10px 12px; color: var(--muted); font-size: 14px; }
 
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-.place-row { display: flex; align-items: center; gap: 10px; }
-.place { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.place-row .name { flex: 1; font-weight: 650; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.link { background: none; border: 0; padding: 4px 0; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
-.link:hover { color: var(--fg); text-decoration: underline; }
-.summary { color: var(--rain); font-size: 17px; line-height: 1.35; }
-.chances { display: flex; align-items: end; gap: 8px; }
-.chances .title { flex: 1; color: var(--chance); font-size: 14px; padding-bottom: 2px; }
-.chances .cell { width: 64px; text-align: center; }
-.chances .cell small { display: block; color: var(--muted); font-size: 12px; }
-.chances .cell b { color: var(--chance); font-size: 18px; font-variant-numeric: tabular-nums; }
-.warn { color: var(--urgent); font-size: 13px; }
-/* the place's graph, over Sweden in the map's upper right (as the widget);
-   placed by app.js, display only: the timeline below the map scrubs */
-.graph-box {
-  position: absolute; border-radius: 6px; pointer-events: none;
-  background: color-mix(in srgb, var(--surface) 84%, transparent);
-  border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
-}
-#graph { position: absolute; inset: 3px; width: calc(100% - 6px); height: calc(100% - 6px); }
-.hint { color: var(--muted); font-size: 14px; }
-.note { color: var(--chance); font-size: 13px; }
-.chip[aria-busy="true"] { opacity: .6; cursor: progress; }
+.controls { position: absolute; left: 16px; bottom: 36px; display: flex; align-items: center; gap: 8px; }
+.play { width: 44px; height: 44px; border: 0; border-radius: 50%; background: var(--play); color: var(--on-play); display: grid; place-items: center; padding: 0; cursor: pointer; }
+.time-chip { height: 32px; padding: 0 12px; border-radius: 16px; background: var(--chip); display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.time-chip .kind { font-size: 11px; letter-spacing: 0.06em; color: var(--muted); }
+.time-chip .kind.projected { color: var(--accent); }
 
-.places { display: flex; flex-direction: column; gap: 10px; }
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip {
-  border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 999px;
-  padding: 7px 13px; font: inherit; font-size: 14px; cursor: pointer;
-}
-.chip:hover { border-color: var(--rain); }
-.search { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: inherit; }
-.results { display: flex; flex-direction: column; }
-.results button { text-align: left; padding: 8px 10px; border: 0; border-radius: 6px; background: none; color: var(--fg); font: inherit; cursor: pointer; }
-.results button:hover, .results button:focus-visible { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+/* ---- the sheet ---- */
+.sheet { position: relative; margin-top: -24px; background: var(--surface); border-radius: 28px 28px 0 0; padding: 20px 20px max(24px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 18px; }
+.answer { display: flex; flex-direction: column; gap: 6px; }
+.where { font-size: 13px; font-weight: 500; color: var(--muted); }
+.answer h1 { margin: 0; font-size: 34px; line-height: 1.05; font-weight: 700; letter-spacing: -0.02em; }
+.answer p { margin: 0; font-size: 16px; color: var(--text2); }
+.stale { color: var(--urgent); font-size: 14px; }
 
-footer { color: var(--muted); font-size: 13px; padding: 4px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.graph { position: relative; height: 118px; touch-action: none; cursor: grab; border-radius: 8px; }
+.graph:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.graph canvas { width: 100%; height: 100%; display: block; }
+
+.chances h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text2); }
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.tile { background: var(--tile); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+.tile b { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.tile span { font-size: 12px; color: var(--muted); }
+
+.legend .bar { height: 6px; border-radius: 3px; }
+.legend .words { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.legend .edge { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 8px; }
+.legend .edge i { flex: none; width: 22px; height: 10px; border: 1px solid var(--axis); background: repeating-linear-gradient(135deg, var(--muted) 0 1px, transparent 1px 4px); }
+
+footer { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
 footer a { color: inherit; }
-footer a:hover { color: var(--fg); }
+footer a:hover { color: var(--ink); }
 [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<div class="page">
-  <header><h1>Rain Radar Denmark</h1><span>Will it rain here, and when?</span></header>
-
-  <div class="map-wrap" id="map-wrap">
+<div class="app">
+  <div class="map" id="map-wrap">
     <canvas id="map" aria-label="Rain over Denmark: the last hour of radar, then the next 90 minutes"></canvas>
-    <div class="graph-box" id="graph-box" hidden><canvas id="graph" aria-label="Rain at this place: the last hour and the next 90 minutes"></canvas></div>
-    <div class="badge" id="badge" hidden></div>
-    <div class="map-status" id="map-status">Loading DMI's radar…</div>
-  </div>
+    <div class="pin" id="pin" hidden></div>
+    <div class="inset" id="inset-wrap" title="Bornholm">
+      <canvas id="inset" aria-label="Rain over Bornholm"></canvas>
+      <div class="pin" id="inset-pin" hidden></div>
+    </div>
+    <div class="status" id="map-status">Loading DMI's radar…</div>
 
-  <div class="timeline">
-    <button id="play" aria-label="Pause"></button>
-    <div class="track" id="track" role="slider" aria-label="Time" tabindex="0">
-      <div class="rail"></div><div class="fill" id="fill"></div>
-      <div class="now" id="now-tick" hidden></div><div class="now-label" id="now-label" hidden>now</div>
+    <div class="search">
+      <div class="pill">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="color: var(--muted)"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <label for="search" hidden>Place</label>
+        <input id="search" type="search" placeholder="Search a Danish town or place" autocomplete="off" enterkeyhint="go" aria-controls="results">
+        <button class="icon-button" id="locate" aria-label="Use my location">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+        </button>
+      </div>
+      <div class="results" id="results" hidden></div>
+    </div>
+
+    <div class="controls">
+      <button class="play" id="play" aria-label="Pause"></button>
+      <div class="time-chip" id="chip" hidden><span class="kind" id="chip-kind"></span><span id="chip-time"></span></div>
     </div>
   </div>
 
-  <div class="legend">
-    <div class="bar" id="legend-bar"></div>
-    <div class="words"><span>Light</span><span>Heavy</span><span>Extreme</span></div>
-    <div class="edge" id="legend-edge"><i></i>Rain from beyond the map's edge: a guess (brighter = heavier)</div>
-  </div>
-
-  <section class="card" id="card">
-    <div class="place-row">
-      <button class="place" id="place-button" title="Change place"><span aria-hidden="true">📍</span>
-      <span class="name" id="place-name">Pick a place</span></button>
-      <button class="link" id="change-place" hidden>Change place</button>
+  <main class="sheet">
+    <div class="answer">
+      <div class="where" id="where"></div>
+      <h1 id="headline">Pick a place</h1>
+      <p id="sentence">Search above, tap the map, or use your location to see the rain there and what to expect over the next 90 minutes.</p>
+      <div class="stale" id="stale" hidden></div>
     </div>
-    <div class="places" id="places">
-      <div class="hint" id="places-hint">Tap the map in Denmark, or pick a place, to see the rain falling there and what to expect over the next 90 minutes.</div>
-      <div class="chips" id="chips"></div>
-      <div class="note" id="locate-note" role="status" hidden></div>
-      <input class="search" id="search" type="search" placeholder="Search a Danish town or place" autocomplete="off" enterkeyhint="go">
-      <div class="results" id="results"></div>
-    </div>
-    <div class="summary" id="summary" hidden></div>
-    <div class="chances" id="chances" hidden></div>
-    <div class="warn" id="stale" hidden></div>
-  </section>
 
-  <footer>
-    <span>Data: <a href="https://www.dmi.dk/" rel="noopener">DMI</a></span>
-    <a href="https://diegogardini.github.io/denmark-rain-nowcast/" rel="noopener">How does it work?</a>
-    <a href="https://github.com/diegogardini/omarchy-rain-radar-denmark-widget" rel="noopener">Also an Omarchy widget</a>
-  </footer>
+    <div class="graph" id="graph-wrap" role="slider" tabindex="0" aria-label="Time shown on the map" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+      <canvas id="graph" aria-hidden="true"></canvas>
+    </div>
+
+    <section class="chances" id="chances" hidden>
+      <h2 id="chances-title"></h2>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <div class="legend">
+      <div class="bar" id="legend-bar"></div>
+      <div class="words"><span>Light</span><span>Heavy</span><span>Extreme</span></div>
+      <div class="edge" id="legend-edge" hidden><i></i>Rain from beyond the map's edge: a guess (brighter = heavier)</div>
+    </div>
+
+    <footer>
+      <span>Data: <a href="https://www.dmi.dk/" rel="noopener">DMI</a></span>
+      <a href="https://diegogardini.github.io/denmark-rain-nowcast/" rel="noopener">How does it work?</a>
+      <a href="https://github.com/diegogardini/omarchy-rain-radar-denmark-widget" rel="noopener">Also an Omarchy widget</a>
+    </footer>
+  </main>
 </div>
 <script src="config.js"></script>
 <script src="radar.js"></script>
