@@ -4,17 +4,20 @@
   /             site/ (the page)
   /lib/X.js     the widget's JavaScript models, from a checkout of the widget
                 repository ($WIDGET_DIR, else ../omarchy-rain-radar-denmark-widget)
-  /dmi/NAME     a DMI radar scan, fetched from DMI (what the Worker does)
+  /dmi/NAME     a DMI radar scan, fetched from DMI (what the Worker's /download does)
+  /dmi-list     DMI's list of the last two hours of scans (the Worker's /list)
 
 usage: python3 tools/dev-server.py [port] [--site DIR]     then open http://localhost:8000/
 
 With --site, serves a built folder (tools/build.sh DIR) as GitHub Pages would,
-keeping only the /dmi/ proxy.
+keeping only the /dmi/ proxies.
 """
+import datetime
 import http.server
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +36,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/dmi-list":
+            # the Worker's query (worker/worker.js: BBOX, two hours), uncached here
+            end = datetime.datetime.now(datetime.timezone.utc)
+            start = end - datetime.timedelta(hours=2)
+            iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            url = ("https://opendataapi.dmi.dk/v1/radardata/collections/composite/items?bbox="
+                   + urllib.parse.quote("5,53.9,16.5,58.5") + "&datetime="
+                   + urllib.parse.quote(iso(start) + "/" + iso(end)) + "&limit=300")
+            try:
+                with urllib.request.urlopen(url, timeout=20) as r:
+                    body = r.read()
+            except Exception as e:
+                return self.send_error(502, str(e))
+            return self.reply(body, "application/geo+json")
         if path.startswith("/dmi/"):
             name = path[5:]
             if not NAME.match(name):

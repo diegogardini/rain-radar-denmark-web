@@ -22,10 +22,13 @@ own models, and draws the map and the graph.
 - **The widget's models** (`lib/*.js` on the site: nowcast, chances, places,
   colours, map) are not copied into this repository: the Pages build takes
   them from the widget repository at its latest release tag.
-- **A Cloudflare Worker** (`worker/`) lets the browser download DMI's scan
-  files, which DMI serves without the header browsers need. It only accepts
-  DMI scan names and caches each scan, so DMI sends each one once, however
-  many people look.
+- **A Cloudflare Worker** (`worker/`) shares DMI's list of the last two hours
+  of scans (`/list`, fetched from DMI at most once a minute for everyone,
+  instead of by every visitor every 5 minutes) and lets the browser download
+  the scan files (`/download/NAME`), which DMI serves without the header
+  browsers need. It only accepts DMI scan names and caches each scan, so DMI
+  sends each one once, however many people look. If the shared list fails,
+  the page asks DMI for it directly; a replay (`?at=`) always does.
 
 Cost: GitHub Pages and the Cloudflare Workers free tier (100,000 requests a
 day).
@@ -36,7 +39,7 @@ With the widget repository checked out next to this one
 (`../omarchy-rain-radar-denmark-widget`, or set `WIDGET_DIR`):
 
 ```bash
-python3 tools/dev-server.py 8765     # http://localhost:8765/ (proxies DMI's scans like the Worker)
+python3 tools/dev-server.py 8765     # http://localhost:8765/ (proxies DMI's list and scans like the Worker)
 node --test tests/*.test.cjs         # the browser converter against the widget's Python one
 bash tools/build.sh _site            # the folder GitHub Pages publishes
 ```

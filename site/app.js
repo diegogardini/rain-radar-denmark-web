@@ -43,10 +43,18 @@ async function loadLib(name) {
 
 // ---- Radar ----
 
+// The scans of the last two hours: the Worker's shared list (one request to
+// DMI a minute for everyone), or DMI's own when that fails, and always for a
+// replay, whose hours are not the shared list's.
 async function fetchItems() {
   const end = new Date(now()), start = new Date(end.getTime() - 2 * 3600000)
-  const url = L.RadarModel.buildItemsUrl(L.MapModel.dmiBbox, start.toISOString(), end.toISOString())
-  const res = await fetch(url)
+  const direct = L.RadarModel.buildItemsUrl(L.MapModel.dmiBbox, start.toISOString(), end.toISOString())
+  let res = null
+  if (!isFinite(AT)) {
+    try { res = await fetch(window.RAIN_CONFIG.listUrl) } catch (e) { res = null }
+    if (res && !res.ok) res = null
+  }
+  if (!res) res = await fetch(direct)
   if (!res.ok) throw new Error("DMI's radar list answered " + res.status)
   let items = L.RadarModel.fullRangeOnly(L.RadarModel.parseItemsResponse(await res.text()))
   // a replay sees only what DMI had published by then (12-13 minutes after each scan)
